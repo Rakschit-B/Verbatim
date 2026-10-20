@@ -1,0 +1,6 @@
+{
+  "parakeet-v2": {"version": "2025.05", "size_mb": 630, "label": "NVIDIA Parakeet v2 — English"},
+  "parakeet-v3": {"version": "2025.08", "size_mb": 640, "label": "NVIDIA Parakeet v3 — 25 European languages"},
+  "whisper-turbo": {"version": "2024.10", "size_mb": 1600, "label": "Whisper large-v3 turbo — Hindi & 99 languages"},
+  "whisper-large-v3": {"version": "2023.11", "size_mb": 3100, "label": "Whisper large-v3"}
+}

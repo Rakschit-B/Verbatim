@@ -1,0 +1,156 @@
+# Builds the Mac DMG and Windows installer in the cloud and publishes a GitHub Release
+# with latest.json (the update channel VERBATIM checks). Trigger: push a tag like v2.0.1,
+# or run manually from the Actions tab ("Run workflow").
+#
+# Optional secrets:
+#   VERBATIM_SIGNING_KEY   Ed25519 key from scripts/release/generate_signing_key.py (signs latest.json)
+#   MAC_CERT_P12_BASE64, MAC_CERT_PASSWORD, MAC_SIGN_IDENTITY   Developer ID Application certificate
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD                  notarisation (removes Gatekeeper warning)
+name: build-and-release
+
+# Manual only ("Run workflow" in the Actions tab). Releases built on the Infinite Story build
+# machine are uploaded directly, so pushing a tag does not start a second build.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg libegl1 libgl1
+      - run: pip install -r requirements-dev.txt
+      - run: QT_QPA_PLATFORM=offscreen python -m pytest -q tests
+
+  mac:
+    needs: test
+    runs-on: macos-14   # Apple Silicon runner
+    env:
+      HAS_CERT: ${{ secrets.MAC_CERT_P12_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements-dev.txt
+      - name: Bundle NVIDIA Parakeet v2 (works offline from first launch)
+        shell: bash
+        run: |
+          mkdir -p bundled_models/sherpa && cd bundled_models/sherpa
+          curl -sSL --retry 5 -o p.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2
+          tar xjf p.tar.bz2 && rm p.tar.bz2 && rm -rf */test_wavs
+      - name: Point the in-app updater at this repository
+        run: python -c "import os,pathlib;p=pathlib.Path('verbatim/settings.py');p.write_text(p.read_text().replace('Rakschit-B/Verbatim',os.environ['GITHUB_REPOSITORY']))"
+      - name: Import signing certificate (optional)
+        if: env.HAS_CERT == 'true'
+        env:
+          P12: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          PW: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: |
+          echo "$P12" | base64 --decode > cert.p12
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security import cert.p12 -k build.keychain -P "$PW" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
+      - name: Build app + DMG
+        env:
+          MAC_SIGN_IDENTITY: ${{ secrets.MAC_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          VERSION=$(python -c "import verbatim;print(verbatim.__version__)")
+          pyinstaller --noconfirm --clean packaging/VERBATIM.spec
+          if [ -n "$MAC_SIGN_IDENTITY" ]; then
+            codesign --force --deep --options runtime --timestamp -s "$MAC_SIGN_IDENTITY" dist/VERBATIM.app
+          else
+            codesign --force --deep -s - dist/VERBATIM.app
+          fi
+          dist/VERBATIM.app/Contents/MacOS/VERBATIM --version
+          STAGE=$(mktemp -d); cp -R dist/VERBATIM.app "$STAGE/"; ln -s /Applications "$STAGE/Applications"
+          cp "scripts/mac/Update VERBATIM.command" "scripts/mac/Schedule Weekly Updates.command" "$STAGE/"
+          cp docs/READ_ME_FIRST.txt "$STAGE/READ ME FIRST.txt"
+          hdiutil create -volname "VERBATIM $VERSION" -srcfolder "$STAGE" -ov -format UDZO "dist/VERBATIM-$VERSION-mac-arm64.dmg"
+          if [ -n "$MAC_SIGN_IDENTITY" ] && [ -n "$APPLE_ID" ]; then
+            codesign -s "$MAC_SIGN_IDENTITY" --timestamp "dist/VERBATIM-$VERSION-mac-arm64.dmg"
+            xcrun notarytool submit "dist/VERBATIM-$VERSION-mac-arm64.dmg" --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+            xcrun stapler staple "dist/VERBATIM-$VERSION-mac-arm64.dmg"
+          fi
+      - uses: actions/upload-artifact@v4
+        with: { name: mac-dmg, path: "dist/*.dmg" }
+
+  windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements-dev.txt
+      - name: Bundle NVIDIA Parakeet v2 (works offline from first launch)
+        shell: bash
+        run: |
+          mkdir -p bundled_models/sherpa && cd bundled_models/sherpa
+          curl -sSL --retry 5 -o p.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2
+          tar xjf p.tar.bz2 && rm p.tar.bz2 && rm -rf */test_wavs
+      - name: Point the in-app updater at this repository
+        run: python -c "import os,pathlib;p=pathlib.Path('verbatim/settings.py');p.write_text(p.read_text().replace('Rakschit-B/Verbatim',os.environ['GITHUB_REPOSITORY']))"
+      - name: Build exe + installer
+        shell: pwsh
+        run: |
+          $v = python -c "import verbatim;print(verbatim.__version__)"
+          pyinstaller --noconfirm --clean packaging/VERBATIM.spec
+          dist/VERBATIM/verbatim-cli.exe --version
+          $p = Start-Process dist/VERBATIM/VERBATIM.exe -ArgumentList "--selftest-ui","$PWD\ui-selftest.png" -PassThru
+          $p | Wait-Process -Timeout 90
+          if (-not (Test-Path ui-selftest.png)) { throw "VERBATIM window did not open (UI self-test)" }
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) { choco install innosetup -y --no-progress }
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DAppVersion=$v" packaging/windows/VERBATIM.iss
+          Compress-Archive -Path dist/VERBATIM/* -DestinationPath "dist/VERBATIM-$v-windows-portable.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: |
+            dist/*.exe
+            dist/*-portable.zip
+
+  release:
+    needs: [mac, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - name: Source zip + signed manifest
+        env:
+          VERBATIM_SIGNING_KEY: ${{ secrets.VERBATIM_SIGNING_KEY }}
+        run: |
+          pip install cryptography
+          VERSION=$(python -c "import verbatim;print(verbatim.__version__)")
+          TAG=${GITHUB_REF_NAME}
+          [[ "$TAG" == v* ]] || TAG="v$VERSION"
+          git archive --format=zip --prefix="VERBATIM-$VERSION/" -o "dist/VERBATIM-$VERSION-source.zip" HEAD
+          python scripts/release/make_manifest.py --version "$VERSION" \
+            --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG" \
+            --notes "$(git log -1 --pretty=%s)" \
+            --mac dist/VERBATIM-$VERSION-mac-arm64.dmg --win dist/VERBATIM-$VERSION-Setup.exe \
+            --src dist/VERBATIM-$VERSION-source.zip --out dist/latest.json
+          echo "TAG=$TAG" >> $GITHUB_ENV
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: |
+            dist/*.dmg
+            dist/*.exe
+            dist/*.zip
+            dist/latest.json
