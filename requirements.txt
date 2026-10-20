@@ -16,3 +16,4 @@ mlx-whisper>=0.4.2,<1 ; sys_platform == "darwin" and platform_machine == "arm64"
 faster-whisper>=1.1,<2 ; sys_platform != "darwin" or platform_machine != "arm64"
 ctranslate2>=4.4,<5        # Voice Studio offline translation (also used by faster-whisper)
 sentencepiece>=0.2,<1
+tokenizers>=0.20,<1         # Chatterbox Multilingual text tokenizer (Voice Studio 3.4)

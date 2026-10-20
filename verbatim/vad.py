@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """Voice activity detection with Silero VAD v5 (ONNX, MIT licence).
 
 Why: Whisper invents text ("Thank you for watching", repeated lines) when fed silence or

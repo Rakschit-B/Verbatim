@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """Transcript editing (used by the editor window): change words or speakers, then re-export.
 
 Edits keep word timings wherever the words did not change (difflib alignment of old vs new

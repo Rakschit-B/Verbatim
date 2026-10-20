@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """VERBATIM 3.0 look & feel: colour tokens (light / dark), line icons and the Qt style sheet."""
 from __future__ import annotations
 
@@ -172,6 +175,7 @@ QPushButton#nav {{ background:transparent; border:0; border-radius:14px; text-al
 QPushButton#nav:hover {{ background:{t['hover']}; }}
 QPushButton#nav:checked {{ background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {t['nav_a']}, stop:1 {t['nav_b']}); color:{t['nav_ink']}; font-weight:600; }}
 QPushButton#pillBtn {{ border-radius:19px; padding:0 18px; min-height:40px; max-height:40px; font-weight:600; }}
+QPushButton#pillBtn[accent="true"] {{ background:{t['accent']}; color:white; border-color:{t['accent']}; }}
 QPushButton#addFiles, QToolButton#addMenu {{ background:{t['dark_btn']}; color:{t['dark_btn_ink']}; border:0; font-size:14px; font-weight:600; }}
 QPushButton#addFiles {{ border-top-left-radius:20px; border-bottom-left-radius:20px; border-top-right-radius:0; border-bottom-right-radius:0; padding:0 26px 0 22px; min-height:42px; max-height:42px; }}
 QToolButton#addMenu {{ border-top-right-radius:20px; border-bottom-right-radius:20px; padding:0 12px; border-left:1px solid {t['muted']}; min-height:42px; max-height:42px; min-width:22px; }}

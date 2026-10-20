@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """AI audio restoration ("Restore audio", as in TurboScribe) — opt-in for poor recordings.
 
 GTCRN neural speech enhancement (k2-fsa/sherpa-onnx, ~0.5 MB ONNX model, CPU-fast).

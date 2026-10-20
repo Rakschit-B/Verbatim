@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """ONNX engines via sherpa-onnx (k2-fsa, Apache-2.0) — identical on Mac, Windows and Linux.
 
 * NVIDIA Parakeet TDT 0.6B (v2 English / v3 25 European languages): top-10 on the

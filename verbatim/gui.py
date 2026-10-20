@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """VERBATIM desktop app (PySide6 / Qt) — Mac and Windows.
 
 Layout: header (logo, modules, updates) · left navigation · centre (drop zone + file table, or a page)
@@ -22,7 +25,7 @@ from PySide6.QtGui import (QColor, QDesktopServices, QLinearGradient, QPainter, 
                            QPixmap)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog,
                                QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
-                               QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
+                               QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QProgressDialog, QPushButton,
                                QScrollArea, QSizePolicy, QStackedWidget, QTableWidget, QTableWidgetItem, QToolButton,
                                QVBoxLayout, QWidget)
 
@@ -30,7 +33,7 @@ from . import __version__
 from . import ui_theme as th
 from .audio import MEDIA_EXTENSIONS
 from .engines import ENGINE_CHOICES
-from .platform_info import IS_WINDOWS, asset, ffmpeg_path, user_data_dir
+from .platform_info import IS_WINDOWS, asset, ffmpeg_path, resource_root, user_data_dir
 from .settings import FORMATS, LANGUAGES, Settings
 
 T: dict = th.LIGHT  # current theme tokens
@@ -372,7 +375,8 @@ class MetaLoader(QObject):
 
 
 class UpdateWorker(QObject):
-    found = Signal(str, str)
+    """Asks GitHub (public releases, no login) whether a newer VERBATIM exists."""
+    status = Signal(object)          # updater.ChannelStatus
     models_found = Signal(list)
     finished = Signal()
 
@@ -382,19 +386,39 @@ class UpdateWorker(QObject):
 
     def run(self):
         try:
-            from .updater import check, fetch_manifest
+            from .updater import check_github
 
-            info = check(self.url)
-            if info:
-                self.found.emit(info.version, info.notes)
-            from .models import updates_from_manifest
+            st = check_github(self.url)
+            self.status.emit(st)
+            if st.latest:
+                from .models import updates_from_manifest
+                from .updater import fetch_manifest
 
-            ups = updates_from_manifest(fetch_manifest(self.url))
-            if ups:
-                self.models_found.emit(ups)
+                ups = updates_from_manifest(fetch_manifest(st.url))
+                if ups:
+                    self.models_found.emit(ups)
         except Exception:
             pass
         self.finished.emit()
+
+
+class InstallWorker(QObject):
+    """Downloads the verified installer in the background, then hands it to the installer."""
+    progress = Signal(int)
+    done = Signal(bool, str)
+
+    def __init__(self, info):
+        super().__init__()
+        self.info = info
+
+    def run(self):
+        from .updater import download, install
+
+        try:
+            pkg = download(self.info, lambda f: self.progress.emit(int(f * 100)))
+            self.done.emit(True, install(pkg, self.info))
+        except Exception as exc:
+            self.done.emit(False, str(exc))
 
 
 class ModelWorker(QObject):
@@ -420,7 +444,11 @@ class ModelWorker(QObject):
                     if f - last[0] >= 0.05 or f >= 1:
                         last[0] = f
                         self.progress.emit(m)
-                if key.startswith("tts-"):
+                if key == "sep-uvr":
+                    from .voicelab import uvr_model
+
+                    uvr_model(cb)
+                elif key.startswith("tts-"):
                     tts.ensure(key[4:], cb)
                 elif key.startswith("llm-"):
                     llm.ensure_server(cb)
@@ -436,6 +464,10 @@ class ModelWorker(QObject):
 def extra_model_label(key: str) -> str:
     from . import llm, tts
 
+    if key == "tts-cb":
+        return "Expressive voices & voice cloning — Chatterbox Multilingual"
+    if key == "sep-uvr":
+        return "Voice / music separation — UVR MDX-Net"
     if key.startswith("tts-"):
         return f"Voice Studio voices — {tts.ENGINES[key[4:]]['label']}"
     if key.startswith("llm-"):
@@ -478,7 +510,7 @@ class Window(QMainWindow):
         self.thread = None
         self.running = False
         self.sort_key = "added"
-        self.setWindowTitle(f"VERBATIM {__version__} — by Infinite Story")
+        self.setWindowTitle(f"VERBATIM {__version__} — an Infinite Story LLP product")
         scr = QApplication.primaryScreen().availableGeometry() if QApplication.primaryScreen() else None
         self.resize(min(1560, int(scr.width() * 0.94)) if scr else 1480, min(980, int(scr.height() * 0.92)) if scr else 940)
         self.setMinimumSize(1180, 720)
@@ -580,16 +612,18 @@ class Window(QMainWindow):
         self.subtitle = label("Accurate batch transcription with a full audit trail.", "sub")
         h.addWidget(self.subtitle)
         upd = QPushButton("  Check for updates")
+        self.upd_btn = upd
+        upd.setToolTip("VERBATIM checks GitHub for new versions. Nothing installs without your OK.")
         upd.setObjectName("pillBtn")
         upd.setCursor(Qt.PointingHandCursor)
         ICONS.set(upd, "download", "ink", 16)
-        upd.clicked.connect(lambda: self.check_updates(manual=True))
+        upd.clicked.connect(self.header_update_clicked)
         h.addWidget(upd)
         user = (getpass.getuser() or "V").strip()
         av = label(user[:1].upper(), "avatar")
         av.setFixedSize(44, 44)
         av.setAlignment(Qt.AlignCenter)
-        av.setToolTip(f"{user} — VERBATIM {__version__}")
+        av.setToolTip(f"{user} — VERBATIM {__version__} · © 2026 Infinite Story LLP")
         h.addWidget(av)
         return h
 
@@ -1826,17 +1860,28 @@ class Window(QMainWindow):
         iv.addLayout(row)
         iv.addWidget(hline())
 
-        iv.addWidget(label("Updates", "h3"))
+        iv.addWidget(label("Updates from GitHub", "h3"))
+        iv.addWidget(label(f"You are using VERBATIM {__version__} by Infinite Story LLP. VERBATIM is connected to "
+                           "GitHub out of the box — no sign-in needed. It checks for new versions every day, tells "
+                           "you when one is ready, and installs only after you say yes.", "hint", wrap=True))
         self.ver_label = label(f"You are using VERBATIM {__version__}.", "sub")
-        iv.addWidget(self.ver_label)
+        self.gh_status = label("Not checked yet.", "sub", wrap=True)
+        iv.addWidget(self.gh_status)
         row = QHBoxLayout()
-        b = QPushButton("  Check for updates now")
+        b = QPushButton("  Check now")
         ICONS.set(b, "refresh", "ink", 15)
         b.clicked.connect(lambda: self.check_updates(manual=True))
         row.addWidget(b)
+        b = QPushButton("Install update")
+        b.clicked.connect(self.install_update)
+        row.addWidget(b)
+        b = QPushButton("Open releases page")
+        b.setObjectName("link")
+        b.clicked.connect(self.open_releases)
+        row.addWidget(b)
         row.addStretch()
         iv.addLayout(row)
-        self.auto_upd = QCheckBox("Check for app and speech-model updates automatically (you are always asked "
+        self.auto_upd = QCheckBox("Check GitHub for app and model updates every day (you are always asked "
                                   "before anything installs)")
         self.auto_upd.setChecked(self.s.auto_check_updates)
         iv.addWidget(self.auto_upd)
@@ -1846,7 +1891,7 @@ class Window(QMainWindow):
         self.models_box = QVBoxLayout()
         iv.addLayout(self.models_box)
         row = QHBoxLayout()
-        b = QPushButton("  Download recommended models…")
+        b = QPushButton("  Download everything for offline use…")
         ICONS.set(b, "download", "ink", 15)
         b.clicked.connect(self.offer_models)
         row.addWidget(b)
@@ -1867,12 +1912,38 @@ class Window(QMainWindow):
         row.addWidget(b)
         row.addStretch()
         iv.addLayout(row)
+        row = QHBoxLayout()
+        b = QPushButton("Azure Speech key… (premium voices)")
+        b.clicked.connect(self.set_azure_key)
+        row.addWidget(b)
+        row.addStretch()
+        iv.addLayout(row)
+        iv.addWidget(label("Your ElevenLabs key also unlocks ElevenLabs voices and cloud cloning in Voice Lab. Local "
+                           "voices stay the default and never leave this computer.", "hint", wrap=True))
         iv.addWidget(hline())
 
         iv.addWidget(label("Data", "h3"))
         row = QHBoxLayout()
         b = QPushButton("Open VERBATIM data folder")
         b.clicked.connect(lambda: open_path(user_data_dir()))
+        row.addWidget(b)
+        row.addStretch()
+        iv.addLayout(row)
+        iv.addWidget(hline())
+        iv.addWidget(label("About", "h3"))
+        iv.addWidget(label(f"VERBATIM {__version__} — an Infinite Story LLP product. © 2026 Infinite Story LLP. All rights "
+                           "reserved. VERBATIM is proprietary software; third-party components remain under their own "
+                           "licences.", "hint", wrap=True))
+        row = QHBoxLayout()
+        for text, name in (("Licence agreement", "LICENSE"), ("Third-party notices", "THIRD_PARTY_NOTICES.md")):
+            b = QPushButton(text)
+            b.setObjectName("link")
+            b.clicked.connect(lambda _=False, n=name: open_path(resource_root() / n if (resource_root() / n).exists()
+                                                                else resource_root() / "app" / n))
+            row.addWidget(b)
+        b = QPushButton("infinitestory.in")
+        b.setObjectName("link")
+        b.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://infinitestory.in")))
         row.addWidget(b)
         row.addStretch()
         iv.addLayout(row)
@@ -1906,11 +1977,13 @@ class Window(QMainWindow):
                                         f"{align.SIZE_MB} MB{'' if ok else '  (downloads when first needed)'}", "sub"))
         from . import tts
 
-        for eng in ("st", "ko"):
+        from . import tts_chatterbox
+
+        for eng in ("st", "ko", "zv", "cb"):
             ok = tts.is_installed(eng)
-            self.models_box.addWidget(label(f"{'✓' if ok else '○'}  Voice Studio voices — {tts.ENGINES[eng]['label']}  ·  "
-                                            f"{tts.ENGINES[eng]['size_mb']} MB{'' if ok else '  (downloads when first needed)'}",
-                                            "sub"))
+            mb = tts_chatterbox.SIZE_MB if eng == "cb" else tts.ENGINES[eng]["size_mb"]
+            self.models_box.addWidget(label(f"{'✓' if ok else '○'}  {extra_model_label('tts-' + eng)}  ·  "
+                                            f"{mb} MB{'' if ok else '  (downloads when first needed)'}", "sub"))
         from . import llm
 
         for key, m in llm.MODELS.items():
@@ -2181,62 +2254,127 @@ class Window(QMainWindow):
         e.accept()
 
     # ------------------------------------------------------------------ updates
+    def set_azure_key(self):
+        from .tts_cloud import azure_key, set_azure
+
+        k, r = azure_key()
+        key, ok = QInputDialog.getText(self, "Azure Speech", "Azure Speech key (from the Azure portal › Speech resource "
+                                       "› Keys and Endpoint):", QLineEdit.Password, k)
+        if not ok:
+            return
+        region, ok = QInputDialog.getText(self, "Azure Speech", "Region (e.g. centralindia, eastus):", QLineEdit.Normal, r)
+        if ok:
+            set_azure(key, region)
+            self.say("Azure Speech key saved in the system keychain")
+
     def check_updates(self, manual: bool = False):
         if not manual and self.s.last_update_check:
             try:
-                if datetime.now() - datetime.fromisoformat(self.s.last_update_check) < timedelta(days=3):
+                if datetime.now() - datetime.fromisoformat(self.s.last_update_check) < timedelta(hours=20):
                     return
             except ValueError:
                 pass
+        if getattr(self, "_checking", False):
+            return
+        self._checking = True
         self.s.last_update_check = datetime.now().isoformat(timespec="seconds")
         self.s.save()
         if manual:
-            self.say("Checking for updates…")
+            self.say("Checking GitHub for updates…")
+            if hasattr(self, "gh_status"):
+                self.gh_status.setText("Checking GitHub…")
         self.uthread = QThread()
         self.uworker = UpdateWorker(self.s.update_manifest_url)
         self.uworker.moveToThread(self.uthread)
         self.uthread.started.connect(self.uworker.run)
-        self.uworker.found.connect(self.on_update_found)
+        self.uworker.status.connect(self.on_update_status)
         self.uworker.models_found.connect(self.on_models_found)
         self._manual_check = manual
         self.uthread.finished.connect(self.on_update_check_done)
         self.uworker.finished.connect(self.uthread.quit)
-        QTimer.singleShot(20000, self.uthread.quit)
+        QTimer.singleShot(30000, self.uthread.quit)
         self.uthread.start()
 
     def on_update_check_done(self):  # slot (runs on the UI thread)
-        if self._manual_check and not self.banner.isVisible():
-            self.say("Update check finished — you have the latest version")
+        self._checking = False
+        if self._manual_check and getattr(self, "gh_last", None) is None:
+            self.say("Couldn't reach GitHub — check the internet connection and try again")
+
+    def on_update_status(self, st):  # slot: updater.ChannelStatus
+        self.gh_last = st
+        stamp = datetime.now().strftime("%d %b %Y, %H:%M")
+        if hasattr(self, "gh_status"):
+            self.gh_status.setText(f"{st.summary()}\nLast checked {stamp}.")
+        if st.update:
+            self.update_info = st.update
+            self.on_update_found(st.update.version, st.update.notes)
+        elif self._manual_check:
+            self.say(st.summary())
+            if st.reachable:
+                QMessageBox.information(self, "Updates", st.summary())
 
     def on_update_found(self, version: str, notes: str):
         self.new_version = version
-        self.banner_text.setText(f"<b>VERBATIM {version} is available.</b>  {notes[:160]}")
+        self.banner_text.setText(f"<b>VERBATIM {version} is available on GitHub.</b>  {notes[:160]}")
         self.banner.setVisible(True)
+        if hasattr(self, "upd_btn"):
+            self.upd_btn.setText(f"  Update to {version}")
+            self.upd_btn.setProperty("accent", True)
+            self.upd_btn.style().unpolish(self.upd_btn)
+            self.upd_btn.style().polish(self.upd_btn)
         self.say(f"Update available: {version}")
+
+    def header_update_clicked(self):
+        if getattr(self, "update_info", None):
+            self.install_update()
+        else:
+            self.check_updates(manual=True)
+
+    def open_releases(self):
+        from .updater import channel_urls, releases_page
+
+        st = getattr(self, "gh_last", None)
+        url = releases_page(st.url if st and st.latest else channel_urls(self.s.update_manifest_url)[-1])
+        QDesktopServices.openUrl(QUrl(url))
 
     def install_update(self):
         if self.running:
             QMessageBox.information(self, "Busy", "Install the update after the current batch finishes.")
             return
-        if QMessageBox.question(self, "Install update",
-                                f"Download and install VERBATIM {getattr(self, 'new_version', '')} now?\n"
-                                "VERBATIM will close and reopen. Your settings and transcripts are kept.") \
-                != QMessageBox.Yes:
+        info = getattr(self, "update_info", None)
+        if not info:
+            self.check_updates(manual=True)
             return
-        from .updater import check, download, install
+        notes = (info.notes or "").strip()
+        if QMessageBox.question(self, "Install update",
+                                f"VERBATIM {info.version} is ready on GitHub.\n\n{notes[:600]}\n\n"
+                                "Download and install it now? VERBATIM will close and reopen. "
+                                "Your settings, projects, voices and transcripts are kept, and the current "
+                                "version is kept as a backup.") != QMessageBox.Yes:
+            return
+        self.idlg = QProgressDialog(f"Downloading VERBATIM {info.version}…", None, 0, 100, self)
+        self.idlg.setWindowTitle("Updating VERBATIM")
+        self.idlg.setWindowModality(Qt.WindowModal)
+        self.idlg.setMinimumDuration(0)
+        self.idlg.setValue(0)
+        self.ithread = QThread()
+        self.iworker = InstallWorker(info)
+        self.iworker.moveToThread(self.ithread)
+        self.ithread.started.connect(self.iworker.run)
+        self.iworker.progress.connect(self.idlg.setValue)
+        self.iworker.done.connect(self.on_install_done)
+        self.iworker.done.connect(self.ithread.quit)
+        self.ithread.start()
 
-        try:
-            self.say("Downloading update…")
-            info = check(self.s.update_manifest_url)
-            if not info:
-                return
-            pkg = download(info)
-            self.say("Update verified (SHA-256) — installing")
-            msg = install(pkg, info)
-            QMessageBox.information(self, "Updating", msg)
-            QApplication.quit()
-        except Exception as exc:
-            QMessageBox.warning(self, "Update failed", str(exc))
+    def on_install_done(self, ok: bool, msg: str):  # slot
+        self.idlg.close()
+        if not ok:
+            QMessageBox.warning(self, "Update failed", f"{msg}\n\nNothing was changed — VERBATIM {__version__} "
+                                "is still installed.")
+            return
+        self.say("Update verified (SHA-256) — installing")
+        QMessageBox.information(self, "Updating", msg)
+        QApplication.quit()
 
     # ------------------------------------------------------------------ models
     def offer_models(self):
@@ -2246,10 +2384,17 @@ class Window(QMainWindow):
 
         missing = [k for k in ("whisper-turbo", "parakeet-v3") if not is_installed(k)]
         sizes = {k: CATALOG[k]["size_mb"] for k in missing}
-        for eng in ("st", "ko"):
+        from . import tts_chatterbox, voicelab
+        from .platform_info import models_dir, resource_root
+
+        for eng in ("st", "ko", "zv", "cb"):
             if not tts.is_installed(eng):
                 missing.append(f"tts-{eng}")
-                sizes[f"tts-{eng}"] = tts.ENGINES[eng]["size_mb"]
+                sizes[f"tts-{eng}"] = tts_chatterbox.SIZE_MB if eng == "cb" else tts.ENGINES[eng]["size_mb"]
+        if not (models_dir() / "separation" / "UVR-MDX-NET-Voc_FT.onnx").exists() and \
+                not (resource_root() / "models" / "separation" / "UVR-MDX-NET-Voc_FT.onnx").exists():
+            missing.append("sep-uvr")
+            sizes["sep-uvr"] = voicelab.UVR_MB
         if llm.model_path("translategemma-4b") is None:
             missing.append("llm-translategemma-4b")
             sizes["llm-translategemma-4b"] = llm.MODELS["translategemma-4b"]["size_mb"]

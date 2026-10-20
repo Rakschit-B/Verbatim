@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """Audio extraction and conditioning.
 
 Every engine receives the same 16 kHz mono float32 signal, decoded once by FFmpeg.

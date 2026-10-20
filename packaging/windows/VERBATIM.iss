@@ -8,8 +8,13 @@
 AppId={{8C3E8F2B-6A1D-4C49-9E0B-9F1D7A11E5B1}
 AppName=VERBATIM
 AppVersion={#AppVersion}
-AppPublisher=Infinite Story
+AppPublisher=Infinite Story LLP
+AppCopyright=Copyright (c) 2026 Infinite Story LLP. All rights reserved.
+VersionInfoCompany=Infinite Story LLP
+VersionInfoCopyright=Copyright (c) 2026 Infinite Story LLP
+VersionInfoDescription=VERBATIM - an Infinite Story LLP product
 AppPublisherURL=https://infinitestory.in
+LicenseFile=..\..\LICENSE
 DefaultDirName={localappdata}\Programs\VERBATIM
 DefaultGroupName=VERBATIM
 PrivilegesRequired=lowest

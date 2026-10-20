@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """One-time: create the Ed25519 key pair used to sign update manifests.
 
 Writes the PUBLIC key to assets/update_public_key.txt (ships inside the app) and prints the

@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """Voice Studio jobs: transcript → translation → timed voiceover → exports.
 
 A job lives next to the transcript, in "<output folder>/Voice Studio/", as
@@ -45,6 +48,9 @@ class Line:
     voice: str = ""          # per-line voice override ("" = the speaker's voice)
     pace: float = 1.0        # per-line pace adjustment (×)
     check: str = ""          # back-translation into the source language (meaning check)
+    emotion: str = ""        # performance direction (direction.py): neutral, warm, inspiring, …
+    intensity: float = 0.5   # 0.3 subtle · 0.5 natural · 0.8 strong
+    emphasis: str = ""       # words to stress, comma-separated
 
 
 @dataclass
@@ -60,6 +66,12 @@ class VoiceJob:
     speed: float = 1.0
     quality: str = "standard"                      # "standard" | "studio"
     style: str = "natural"                         # translation style: faithful | natural | creative
+    clone_engine: str = "auto"                     # custom voices: auto | chatterbox | zipvoice | elevenlabs
+    eleven_model: str = "eleven_v3"
+    music: dict = field(default_factory=dict)      # music bed settings (music.py): file, mode, level…
+    keep_background: bool = False                  # dubbing: keep original music & effects, remove original voice
+    sequential: bool = False                       # script voiceover: lines follow each other (no video timing)
+    paragraph_ends: list = field(default_factory=list)   # script jobs: line indexes that end a paragraph
     duration: float = 0.0
     created: str = ""
     updated: str = ""
@@ -71,7 +83,12 @@ class VoiceJob:
     @property
     def path(self) -> Path:
         src = Path(self.source_json)
-        return src.parent / "Voice Studio" / f"{src.stem} — {LANG_NAMES.get(self.tgt_lang, self.tgt_lang)}.voice.json"
+        return src.parent / "Voice Studio" / f"{self.stem} — {LANG_NAMES.get(self.tgt_lang, self.tgt_lang)}.voice.json"
+
+    @property
+    def stem(self) -> str:
+        s = Path(self.source_json).stem
+        return s[:-7] if s.endswith(".script") else s
 
     def save(self) -> Path:
         self.updated = datetime.now().isoformat(timespec="seconds")
@@ -85,8 +102,10 @@ class VoiceJob:
     @staticmethod
     def load(path: str | Path) -> "VoiceJob":
         d = json.loads(Path(path).read_text(encoding="utf-8"))
-        d["lines"] = [Line(**x) for x in d.get("lines", [])]
-        return VoiceJob(**d)
+        names = set(Line.__dataclass_fields__)
+        d["lines"] = [Line(**{k: v for k, v in x.items() if k in names}) for x in d.get("lines", [])]
+        jn = set(VoiceJob.__dataclass_fields__)
+        return VoiceJob(**{k: v for k, v in d.items() if k in jn})
 
     def speakers(self) -> list[str]:
         out = []
@@ -110,6 +129,44 @@ def new_job(source_json: str | Path, tgt_lang: str) -> VoiceJob:
         for s, e, txt in _sentences(seg):
             job.lines.append(Line(len(job.lines), round(s, 3), round(e, 3), seg.speaker or "Speaker", txt))
     return job
+
+
+def new_script_job(script: str, lang: str, title: str, folder: str | Path, tgt_lang: str = "") -> VoiceJob:
+    """A voiceover from a written script (no video): one line per sentence, spoken back to back with
+    natural pauses. tgt_lang ≠ lang translates the script first (Translate button)."""
+    folder = Path(folder)
+    safe = re.sub(r'[\\/:*?"<>|]+', " ", title).strip() or "Voiceover"
+    src = folder / f"{safe}.script.json"
+    folder.mkdir(parents=True, exist_ok=True)
+    src.write_text(json.dumps({"title": title, "language": lang, "script": script}, ensure_ascii=False, indent=1),
+                   encoding="utf-8")
+    tgt = tgt_lang or lang
+    job = VoiceJob(str(src), "", lang, tgt, sequential=True, created=datetime.now().isoformat(timespec="seconds"))
+    if job.path.exists():
+        old = VoiceJob.load(job.path)
+        if [ln.source for ln in old.lines] == [x for x in split_script(script)[0]]:
+            return old
+    sentences, para_ends = split_script(script)
+    t = 0.0
+    for k, sent in enumerate(sentences):
+        dur = max(1.0, len(sent) / CHARS_PER_SEC.get(lang, 15.0))
+        job.lines.append(Line(k, round(t, 3), round(t + dur, 3), "Narrator", sent, text=sent if tgt == lang else ""))
+        t += dur + 0.4
+    job.paragraph_ends = para_ends
+    job.duration = t
+    return job
+
+
+def split_script(script: str) -> tuple[list[str], list[int]]:
+    out, ends = [], []
+    for para in re.split(r"\n\s*\n", script.strip()):
+        para = " ".join(para.split())
+        if not para:
+            continue
+        parts = [p.strip() for p in re.split(r"(?<=[.!?।。？！])\s+", para) if p.strip()]
+        out.extend(parts)
+        ends.append(len(out) - 1)
+    return out, ends
 
 
 def _sentences(seg):
@@ -169,6 +226,23 @@ def check_meaning(job: VoiceJob, translator, progress=None) -> VoiceJob:
     return job
 
 
+def direct_job(job: VoiceJob, translator=None, only_empty: bool = False) -> int:
+    """Mark how each line should be performed. translator = ClaudeTranslator → Claude directs the whole
+    script; None → built-in rules. Returns lines directed."""
+    from . import direction
+
+    idx = [k for k, ln in enumerate(job.lines) if ln.text.strip() and not (only_empty and ln.emotion)]
+    if not idx:
+        return 0
+    texts = [job.lines[k].text for k in idx]
+    got = direction.claude_direct(texts, job.tgt_lang, translator) if translator else direction.auto_direct(texts)
+    for k, g in zip(idx, got):
+        ln = job.lines[k]
+        ln.emotion, ln.intensity, ln.emphasis = g["emotion"], g["intensity"], g["emphasis"]
+    job.save()
+    return len(idx)
+
+
 CHARS_PER_SEC = {"hi": 13.0, "ja": 7.5, "zh": 5.5, "ko": 8.0}
 
 
@@ -219,20 +293,38 @@ def render(job: VoiceJob, synth, progress=None, mix: bool = True, video: bool = 
         sid = job.voices.get(ln.speaker) or defaults.get(ln.speaker, "")
         if ln.voice:
             sid = ln.voice
-        nxt = next((x.start for x in job.lines[k + 1:] if x.text.strip()), dur)
-        start = max(ln.start, prev_end + 0.05)       # never overlap the previous voice
-        slot = max(ln.end, nxt - 0.08) - start
-        base = job.speed * (ln.pace or 1.0)
+        if job.sequential:   # script voiceover: follow on with a natural pause
+            from .music import BedSettings
+
+            if prev_end == 0.0:
+                start = BedSettings.from_dict(job.music).intro_s if job.music.get("file") else 0.3
+            else:
+                para = (k - 1) in job.paragraph_ends
+                pause = 0.45 + ((0.95 if job.music.get("file") else 0.35) if para else 0.0)  # music breathes
+                if ln.emotion in ("calm", "inspiring", "sad", "whisper"):
+                    pause += 0.2
+                start = prev_end + pause
+            slot = 1e9
+        else:
+            nxt = next((x.start for x in job.lines[k + 1:] if x.text.strip()), dur)
+            start = max(ln.start, prev_end + 0.05)       # never overlap the previous voice
+            slot = max(ln.end, nxt - 0.08) - start
+        from .direction import info as _emo
+
+        dirn = {"emotion": ln.emotion or "neutral", "intensity": ln.intensity, "emphasis": ln.emphasis}
+        base = job.speed * (ln.pace or 1.0) * (_emo(ln.emotion)["pace"] if ln.emotion else 1.0)
         speed = base
-        a = _trim(synth.speak(ln.text, job.tgt_lang, sid, speed))
+        a = _trim(synth.speak(ln.text, job.tgt_lang, sid, speed, dirn))
         need = len(a) / SR
         for _ in range(3):  # speed up until it fits (speech rate is not exactly proportional to the setting)
             if need <= slot or slot <= 0.3 or speed >= base * MAX_SPEEDUP - 1e-3:
                 break
             speed = min(base * MAX_SPEEDUP, speed * need / slot * 1.04)
-            a = _trim(synth.speak(ln.text, job.tgt_lang, sid, speed))
+            a = _trim(synth.speak(ln.text, job.tgt_lang, sid, speed, dirn))
             need = len(a) / SR
-        shift = start - ln.start
+        if job.sequential:
+            ln.start, ln.end = round(start, 3), round(start + need, 3)
+        shift = 0.0 if job.sequential else start - ln.start
         over = need - slot
         ln.speed, ln.spoken = round(speed, 2), round(need, 2)
         if over > 0.25:
@@ -248,7 +340,9 @@ def render(job: VoiceJob, synth, progress=None, mix: bool = True, video: bool = 
             track = np.concatenate([track, np.zeros(i0 + len(a) - len(track) + SR, dtype=np.float32)])
         track[i0:i0 + len(a)] += a
         prev_end = start + need
-    end = max(int(dur * SR), int(prev_end * SR) + int(0.5 * SR))
+    end = int(prev_end * SR) + int(0.5 * SR) if job.sequential else max(int(dur * SR), int(prev_end * SR) + int(0.5 * SR))
+    if job.sequential:
+        job.duration = prev_end + 0.5
     track = track[:end]
     peak = float(np.abs(track).max()) if len(track) else 0
     if peak > 0:
@@ -281,7 +375,7 @@ def _ffmpeg(args: list[str]) -> tuple[int, str]:
 
 def _write_outputs(job: VoiceJob, track: np.ndarray, mix: bool, video: bool, progress) -> dict:
     lang = LANG_NAMES.get(job.tgt_lang, job.tgt_lang)
-    stem = Path(job.source_json).stem
+    stem = job.stem
     folder = job.path.parent
     folder.mkdir(parents=True, exist_ok=True)
     out: dict[str, str] = {"folder": str(folder)}
@@ -290,6 +384,51 @@ def _write_outputs(job: VoiceJob, track: np.ndarray, mix: bool, video: bool, pro
     out["voice"] = str(voice)
     media = Path(job.media) if job.media else None
     has_media = bool(media and media.exists())
+    if job.music.get("file") and Path(job.music["file"]).exists():
+        from .music import BedSettings, mix_with_music, write_stereo_wav
+
+        if progress:
+            progress(0.95, "Mixing the music bed (follows the voice)…")
+        lines = [(ln.start, ln.start + ln.spoken, ln.emotion, ln.intensity) for ln in job.lines if ln.spoken]
+        try:
+            mm = mix_with_music(track, BedSettings.from_dict(job.music), lines, extra_tail=True)
+            mpath = folder / f"{stem} — {lang} voiceover + music.wav"
+            write_stereo_wav(mpath, mm)
+            out["music_mix"] = str(mpath)
+            mp3 = mpath.with_suffix(".mp3")
+            if _ffmpeg(["-i", str(mpath), "-c:a", "libmp3lame", "-b:a", "256k", *_meta(job), str(mp3)])[0] == 0:
+                out["music_mp3"] = str(mp3)
+        except Exception as exc:
+            out["music_error"] = str(exc)[:300]
+    if mix and has_media and job.keep_background:
+        from .music import separate_background, write_stereo_wav
+
+        try:
+            if progress:
+                progress(0.9, "Removing the original voice, keeping music & effects…")
+            bg = separate_background(media)
+            n = max(len(bg), len(track))
+            v = np.pad(track, (0, n - len(track)))
+            bgp = np.pad(bg, ((0, n - len(bg)), (0, 0)))
+            from .music import loudness_normalise
+
+            mixed_a = loudness_normalise(bgp * 0.8 + v[:, None], -16.0)
+            mixed = folder / f"{stem} — {lang} voiceover + original background.wav"
+            write_stereo_wav(mixed, mixed_a)
+            out["mix"] = str(mixed)
+            if video and _has_video(media):
+                mp4 = folder / f"{stem} — {lang} voiceover.mp4"
+                code2, err2 = _ffmpeg(["-i", str(media), "-i", str(mixed), "-map", "0:v:0", "-map", "1:a:0", "-c:v",
+                                       "copy", "-c:a", "aac", "-b:a", "192k", *_meta(job), "-movflags", "+faststart",
+                                       "-shortest", str(mp4)])
+                if code2 == 0:
+                    out["video"] = str(mp4)
+                else:
+                    out["video_error"] = err2
+            out.update(write_text_outputs(job, folder, stem, lang))
+            return out
+        except Exception as exc:
+            out["background_error"] = str(exc)[:300]
     if mix and has_media:
         if progress:
             progress(0.96, "Mixing over the original (ducked)…")
@@ -314,7 +453,8 @@ def _write_outputs(job: VoiceJob, track: np.ndarray, mix: bool, video: bool, pro
                 progress(0.98, "Writing the dubbed video…")
             mp4 = folder / f"{stem} — {lang} voiceover.mp4"
             code2, err2 = _ffmpeg(["-i", str(media), "-i", str(mixed), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
-                                   "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-shortest", str(mp4)])
+                                   "-c:a", "aac", "-b:a", "192k", *_meta(job), "-movflags", "+faststart", "-shortest",
+                                   str(mp4)])
             if code2 != 0:  # codec not allowed in MP4: re-encode the picture
                 code2, err2 = _ffmpeg(["-i", str(media), "-i", str(mixed), "-map", "0:v:0", "-map", "1:a:0", "-c:v",
                                        "libx264", "-crf", "20", "-preset", "veryfast", "-c:a", "aac", "-b:a", "192k",
@@ -325,6 +465,15 @@ def _write_outputs(job: VoiceJob, track: np.ndarray, mix: bool, video: bool, pro
                 out["video_error"] = err2
     out.update(write_text_outputs(job, folder, stem, lang))
     return out
+
+
+def _meta(job: VoiceJob) -> list[str]:
+    """Ownership metadata written into every exported audio/video file."""
+    from . import __version__
+
+    return ["-metadata", "copyright=© Infinite Story LLP", "-metadata", "publisher=Infinite Story LLP",
+            "-metadata", f"encoded_by=VERBATIM {__version__} — Infinite Story LLP",
+            "-metadata", "comment=AI voiceover produced with VERBATIM (Infinite Story LLP)"]
 
 
 def _has_video(media: Path) -> bool:

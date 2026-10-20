@@ -1,6 +1,10 @@
-"""Module 02 — Voice Studio: translate a transcript, voice it with stock voices, export.
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
+"""Module 02 — Voice Studio: translate a transcript (or write a script), direct the performance, voice it with
+studio, expressive or custom voices, add a music bed that follows the voice, export.
 
-Also holds the voice consent register (required before cloning, which arrives in Phase 4).
+Tabs: Translation & voiceover · Voice Lab (custom voices from your recordings) · Consent register.
 """
 from __future__ import annotations
 
@@ -53,6 +57,18 @@ def mmss(sec: float) -> str:
     return f"{sec // 3600}:{sec % 3600 // 60:02d}:{sec % 60:02d}" if sec >= 3600 else f"{sec // 60:02d}:{sec % 60:02d}"
 
 
+def perf_text(ln) -> str:
+    if not ln.emotion:
+        return "—"
+    from .direction import info
+
+    strength = "subtle" if ln.intensity < 0.4 else ("strong" if ln.intensity >= 0.7 else "natural")
+    t = f"{info(ln.emotion)['label']} · {strength}"
+    if ln.emphasis:
+        t += f" · stress: {ln.emphasis}"
+    return t
+
+
 # ====================================================================== workers
 class Job(QObject):
     progress = Signal(float, str)
@@ -102,7 +118,7 @@ class VoiceStudio(QWidget):
         sl = QHBoxLayout(seg)
         sl.setContentsMargins(4, 4, 4, 4)
         self.sub = QButtonGroup(self)
-        for i, name in enumerate(["Translation && voiceover", "Consent register"]):
+        for i, name in enumerate(["Translation && voiceover", "Voice Lab", "Consent register"]):
             b = QPushButton(name)
             b.setObjectName("seg")
             b.setCheckable(True)
@@ -111,12 +127,13 @@ class VoiceStudio(QWidget):
             sl.addWidget(b)
         self.sub.button(0).setChecked(True)
         self.sub.idClicked.connect(lambda i: (self.stack.setCurrentIndex(i), self.right.setVisible(i == 0),
-                                              i == 1 and self.load_consent()))
+                                              i == 1 and self.load_lab(), i == 2 and self.load_consent()))
         top.addWidget(seg)
         top.addStretch()
         v.addLayout(top)
         self.stack = QStackedWidget()
         self.stack.addWidget(self._translation_view())
+        self.stack.addWidget(self._lab_view())
         self.stack.addWidget(self._consent_view())
         v.addWidget(self.stack, 1)
         return c
@@ -136,15 +153,20 @@ class VoiceStudio(QWidget):
         b = QPushButton("Open transcript file…")
         b.clicked.connect(self.pick_json)
         row.addWidget(b)
+        b = QPushButton("  New from script…")
+        self.w.icons.set(b, "plus", "ink", 14)
+        b.setToolTip("Write or paste a script — VERBATIM voices it (and adds music), no video needed.")
+        b.clicked.connect(self.new_script)
+        row.addWidget(b)
         r = QToolButton()
         r.setToolTip("Refresh list")
         self.w.icons.set(r, "refresh", "ink", 16)
         r.clicked.connect(self.refresh_sources)
         row.addWidget(r)
         v.addLayout(row)
-        self.table = QTableWidget(0, 6)
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(["Time", "Speaker", "Original", "Translation  (double-click to edit)",
-                                              "Meaning check", "Fit"])
+                                              "Meaning check", "Fit", "Performance"])
         hh = self.table.horizontalHeader()
         hh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         hh.setSectionResizeMode(0, QHeaderView.Fixed)
@@ -156,7 +178,10 @@ class VoiceStudio(QWidget):
         self.table.setColumnWidth(0, 64)
         self.table.setColumnWidth(1, 120)
         self.table.setColumnWidth(5, 120)
+        hh.setSectionResizeMode(6, QHeaderView.Fixed)
+        self.table.setColumnWidth(6, 170)
         self.table.setColumnHidden(4, True)
+        self.table.cellDoubleClicked.connect(self.on_cell_double)
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(True)
         self.table.setShowGrid(False)
@@ -282,7 +307,77 @@ class VoiceStudio(QWidget):
         self.video = QCheckBox("Create the dubbed video (MP4)")
         self.video.setChecked(True)
         v.addWidget(self.mix)
+        self.keep_bg = QCheckBox("Keep original music && effects")
+        self.keep_bg.setToolTip("Separates the original voice from the soundtrack, so the dub plays over the original "
+                                "music and sound effects — like a studio dub.")
+        v.addWidget(self.keep_bg)
         v.addWidget(self.video)
+        hl = QFrame()
+        hl.setObjectName("hline")
+        v.addWidget(hl)
+        v.addWidget(_label("Performance", "h2"))
+        v.addWidget(_label("A voice director marks every line — emotion, strength and the words to stress — so the "
+                           "voice rises and falls with the meaning. Double-click a line's Performance cell to change it.",
+                           "hint", wrap=True))
+        row = QHBoxLayout()
+        self.direct_btn = QPushButton("  Direct the performance")
+        self.w.icons.set(self.direct_btn, "bolt", "ink", 15)
+        self.direct_btn.setToolTip("Claude directs the whole script when your Claude key is set; otherwise VERBATIM's "
+                                   "built-in rules mark each line (offline).")
+        self.direct_btn.clicked.connect(self.do_direct)
+        row.addWidget(self.direct_btn, 1)
+        v.addLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(_label("Your voices speak with", "sub"))
+        self.clone_engine = QComboBox()
+        self.clone_engine.addItem("Best available (offline first)", "auto")
+        self.clone_engine.addItem("Chatterbox — expressive, 23 languages", "chatterbox")
+        self.clone_engine.addItem("ZipVoice — English, fast", "zipvoice")
+        self.clone_engine.addItem("ElevenLabs — cloud clone", "elevenlabs")
+        self.clone_engine.setMinimumContentsLength(10)
+        self.clone_engine.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        row.addWidget(self.clone_engine, 1)
+        v.addLayout(row)
+        hl = QFrame()
+        hl.setObjectName("hline")
+        v.addWidget(hl)
+        v.addWidget(_label("Music", "h2"))
+        v.addWidget(_label("Add a music track: it plays full in the intro, dips under the voice, swells in pauses, "
+                           "follows the emotion of each line, and fades out at the end.", "hint", wrap=True))
+        row = QHBoxLayout()
+        self.music_file = QLineEdit()
+        self.music_file.setReadOnly(True)
+        self.music_file.setPlaceholderText("No music")
+        row.addWidget(self.music_file, 1)
+        b = QPushButton("Choose…")
+        b.clicked.connect(self.pick_music)
+        row.addWidget(b)
+        b = QToolButton()
+        b.setToolTip("Remove music")
+        self.w.icons.set(b, "trash", "ink", 13)
+        b.clicked.connect(lambda: self.music_file.setText(""))
+        row.addWidget(b)
+        v.addLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(_label("Mix", "sub"))
+        from .music import MODES
+
+        self.music_mode = QComboBox()
+        for k, t in MODES.items():
+            self.music_mode.addItem(t, k)
+        self.music_mode.setMinimumContentsLength(10)
+        self.music_mode.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        row.addWidget(self.music_mode, 1)
+        v.addLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(_label("Music under voice", "sub"))
+        self.music_level = QComboBox()
+        for t, dbv in (("Very low (−24 dB)", -24.0), ("Low (−20 dB)", -20.0), ("Present (−16 dB)", -16.0),
+                       ("Forward (−12 dB)", -12.0)):
+            self.music_level.addItem(t, dbv)
+        self.music_level.setCurrentIndex(1)
+        row.addWidget(self.music_level, 1)
+        v.addLayout(row)
         v.addStretch()
         sc.setWidget(inner)
         outer.addWidget(sc, 1)
@@ -374,7 +469,19 @@ class VoiceStudio(QWidget):
             self.pace.setCurrentIndex({0.9: 0, 1.0: 1, 1.1: 2}.get(round(self.job.speed, 1), 1))
             self.style_box.setCurrentIndex(max(0, self.style_box.findData(self.job.style)))
             self.quality.setCurrentIndex(max(0, self.quality.findData(self.job.quality)))
+            self._restore_job_ui()
         self.fill()
+
+    def _restore_job_ui(self):
+        j = self.job
+        self.clone_engine.setCurrentIndex(max(0, self.clone_engine.findData(j.clone_engine)))
+        self.music_file.setText(j.music.get("file", ""))
+        self.music_mode.setCurrentIndex(max(0, self.music_mode.findData(j.music.get("mode", "follow"))))
+        self.music_level.setCurrentIndex(max(0, self.music_level.findData(float(j.music.get("duck_db", -20.0)))))
+        self.keep_bg.setChecked(bool(j.keep_background))
+        has_media = bool(j.media) and not j.sequential
+        for wdg in (self.mix, self.keep_bg, self.video):
+            wdg.setEnabled(has_media)
 
     # ------------------------------------------------------------ table
     def fill(self):
@@ -384,7 +491,8 @@ class VoiceStudio(QWidget):
         warn = QColor("#C2410C") if _T()["name"] == "light" else QColor("#FDBA74")
         okc = QColor("#15803D") if _T()["name"] == "light" else QColor("#86EFAC")
         for i, ln in enumerate(lines):
-            for col, val in enumerate([mmss(ln.start), ln.speaker, ln.source, ln.text, ln.check, ln.fit]):
+            for col, val in enumerate([mmss(ln.start), ln.speaker, ln.source, ln.text, ln.check, ln.fit,
+                                       perf_text(ln)]):
                 it = QTableWidgetItem(val)
                 if col != 3:
                     it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
@@ -395,6 +503,9 @@ class VoiceStudio(QWidget):
                     f = it.font()
                     f.setItalic(True)
                     it.setFont(f)
+                if col == 6:
+                    it.setToolTip("Double-click to direct this line: emotion, strength, words to stress")
+                    it.setForeground(QColor(_T()["accent"]) if ln.emotion else QColor(_T()["sub"]))
                 if col == 5 and val:
                     it.setForeground(warn if val.startswith(("too long", "shifted", "no ")) else okc)
                     if val.startswith("too long"):
@@ -465,7 +576,7 @@ class VoiceStudio(QWidget):
             from .tts import default_voices
 
             for vv in options:
-                box.addItem(vv.label + ("" if vv.engine == "st" else "  · Kokoro"), vv.id)
+                box.addItem(vv.label + {"ko": "  · Kokoro"}.get(vv.engine, ""), vv.id)
             want = self.job.voices.get(spk) or default_voices(self.job.tgt_lang, len(self.job.speakers()))[k]
             if isinstance(want, int):
                 want = f"ko:{want}"
@@ -489,34 +600,46 @@ class VoiceStudio(QWidget):
                 self.job.save()
 
     def preview(self, sid, spk):
-        from .gui_editor import AudioPlayer
-        from .tts import VOICES, Synth, is_installed
+        from .tts import VOICES, is_installed
 
         if not self.job:
             return
         v = VOICES.get(str(sid))
         if v and not is_installed(v.engine):
-            QMessageBox.information(self, "Voices", "The voices download (about 140–330 MB, once) the first time you "
-                                    "generate a voiceover. Click Generate voiceover once, then previews work.")
+            QMessageBox.information(self, "Voices", "This voice downloads once (Voice Studio › Voice Lab › Voice "
+                                    "engines, or the first time you generate a voiceover).")
             return
-        text = next((ln.text for ln in self.job.lines if ln.speaker == spk and ln.text.strip()), "") or \
-            {"hi": "नमस्ते, यह आवाज़ का एक नमूना है।", "en": "Hello, this is a sample of this voice."}.get(
-                self.job.tgt_lang, "Hello, this is a sample of this voice.")
-        try:
+        ln0 = next((ln for ln in self.job.lines if ln.speaker == spk and ln.text.strip()), None)
+        text = ln0.text if ln0 else {"hi": "नमस्ते, यह आवाज़ का एक नमूना है।"}.get(
+            self.job.tgt_lang, "Hello, this is a sample of this voice.")
+        dirn = {"emotion": ln0.emotion, "intensity": ln0.intensity, "emphasis": ln0.emphasis} if ln0 else None
+        lang, quality, ce = self.job.tgt_lang, self.quality.currentData(), self.clone_engine.currentData()
+
+        def work(progress):
             import numpy as np
 
             from .dub import _write_wav
+            from .tts import Synth
 
-            a = Synth(quality=self.quality.currentData()).speak(text[:220], self.job.tgt_lang, str(sid), 1.0)
+            progress(0.3, "Speaking a sample…")
+            a = Synth(progress=progress, quality=quality, clone_engine=ce).speak(text[:220], lang, str(sid), 1.0, dirn)
             tmp = Path(tempfile.gettempdir()) / "verbatim_voice_preview.wav"
             _write_wav(tmp, a if len(a) else np.zeros(1000, dtype=np.float32))
-            if self.preview_player is None:
-                self.preview_player = AudioPlayer()
-            err = self.preview_player.play(tmp, 0.0, 30.0)
-            if err:
-                self.status.setText("Could not play: " + err)
-        except Exception as exc:
-            self.status.setText(f"Preview failed: {exc}")
+            return tmp
+
+        self.run(work, self.on_preview, "Preparing a sample…")
+
+    def on_preview(self, tmp, err):
+        self.busy(False)
+        if err:
+            self.status.setText(f"Preview failed: {err}")
+            return
+        from .gui_editor import AudioPlayer
+
+        if self.preview_player is None:
+            self.preview_player = AudioPlayer()
+        e = self.preview_player.play(tmp, 0.0, 30.0)
+        self.status.setText("Could not play: " + e if e else "Playing sample")
 
     # ------------------------------------------------------------ actions
     def busy(self, on: bool, text: str = ""):
@@ -524,6 +647,8 @@ class VoiceStudio(QWidget):
         self.gen_btn.setEnabled(not on and bool(_voices_for(self.lang.currentData())))
         self.check_btn.setEnabled(not on)
         self.short_btn.setEnabled(not on)
+        if hasattr(self, "direct_btn"):
+            self.direct_btn.setEnabled(not on)
         self.source.setEnabled(not on)
         self.lang.setEnabled(not on)
         self.bar.setVisible(on)
@@ -673,13 +798,19 @@ class VoiceStudio(QWidget):
             return
         self.job.speed = (0.9, 1.0, 1.1)[self.pace.currentIndex()]
         self.job.quality = self.quality.currentData()
+        self.job.clone_engine = self.clone_engine.currentData()
+        self.job.keep_background = self.keep_bg.isChecked()
+        mf = self.music_file.text().strip()
+        self.job.music = {"file": mf, "mode": self.music_mode.currentData(),
+                          "duck_db": self.music_level.currentData()} if mf else {}
         job, mix, video = self.job, self.mix.isChecked(), self.video.isChecked()
 
         def work(progress):
             from .dub import render
             from .tts import Synth
 
-            return render(job, Synth(progress=progress, quality=job.quality), progress, mix=mix, video=video)
+            return render(job, Synth(progress=progress, quality=job.quality, clone_engine=job.clone_engine,
+                                     eleven_model=job.eleven_model), progress, mix=mix, video=video)
 
         self.run(work, self.on_rendered, "Preparing voices…")
 
@@ -691,23 +822,445 @@ class VoiceStudio(QWidget):
             return
         self.fill()
         issues = sum(1 for ln in self.job.lines if ln.fit.startswith("too long"))
-        made = [k for k in ("video", "mix", "voice", "srt") if out.get(k)]
+        made = [k for k in ("video", "music_mix", "mix", "voice", "srt") if out.get(k)]
         self.log.emit(f"Voiceover ready: {Path(self.job.source_json).stem} — {LANG_NAMES.get(self.job.tgt_lang)}")
         box = QMessageBox(self)
         box.setWindowTitle("Voiceover ready")
         names = {"video": "dubbed video (MP4)", "mix": "voiceover mixed with original", "voice": "voice-only track",
-                 "srt": "translated subtitles"}
+                 "srt": "subtitles", "music_mix": "voiceover with music (WAV + MP3)"}
         box.setText("Created: " + ", ".join(names[k] for k in made) + ".")
         info = (f"{issues} line(s) are longer than their slot — shorten them (orange in the Fit column) and generate "
                 "again." if issues else "Every line fits its time slot.")
-        if out.get("mix_error") or out.get("video_error"):
-            info += "\n\nNote: " + (out.get("video_error") or out.get("mix_error"))[:200]
+        err2 = out.get("video_error") or out.get("mix_error") or out.get("music_error") or out.get("background_error")
+        if err2:
+            info += "\n\nNote: " + err2[:200]
         box.setInformativeText(info)
         ob = box.addButton("Open folder", QMessageBox.ActionRole)
         box.addButton(QMessageBox.Ok)
         box.exec()
         if box.clickedButton() is ob:
             _open(out.get("folder"))
+
+    # ------------------------------------------------------------ performance direction
+    def on_cell_double(self, row: int, col: int):
+        if col != 6 or not self.job:
+            return
+        from PySide6.QtWidgets import QSlider
+
+        from .direction import EMOTIONS, ORDER
+
+        ln = self.job.lines[row]
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Direct line {row + 1}")
+        dlg.resize(460, 260)
+        f = QFormLayout(dlg)
+        f.addRow(_label(ln.text or ln.source, "sub", wrap=True))
+        emo = QComboBox()
+        for k in ORDER:
+            emo.addItem(EMOTIONS[k]["label"], k)
+        emo.setCurrentIndex(max(0, emo.findData(ln.emotion or "neutral")))
+        strength = QSlider(Qt.Horizontal)
+        strength.setRange(1, 10)
+        strength.setValue(int(round((ln.intensity or 0.5) * 10)))
+        emph = QLineEdit(ln.emphasis)
+        emph.setPlaceholderText("words to stress, comma-separated")
+        f.addRow("Emotion", emo)
+        f.addRow("Strength", strength)
+        f.addRow("Stress", emph)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel, ok = QPushButton("Cancel"), QPushButton("Apply")
+        ok.setDefault(True)
+        cancel.clicked.connect(dlg.reject)
+        ok.clicked.connect(dlg.accept)
+        btns.addWidget(cancel)
+        btns.addWidget(ok)
+        f.addRow(btns)
+        if dlg.exec() == QDialog.Accepted:
+            ln.emotion, ln.intensity, ln.emphasis = emo.currentData(), strength.value() / 10, emph.text().strip()
+            ln.fit = ""
+            self.job.save()
+            self.fill()
+
+    def do_direct(self):
+        if not self.job or not any(ln.text.strip() for ln in self.job.lines):
+            QMessageBox.information(self, "Translate first", "Translate the lines (or write a script) first.")
+            return
+        from .translate import get_claude_key
+
+        use_claude = bool(get_claude_key())
+        kind, model = self.engine.currentData()
+        job = self.job
+
+        def work(progress):
+            from .dub import direct_job
+
+            tr = None
+            if use_claude:
+                from .translate import ClaudeTranslator
+
+                tr = ClaudeTranslator(model=model if kind == "claude" else "claude-sonnet-5-5")
+            progress(0.2, "The director is reading the whole script…" if tr else "Marking the performance…")
+            return direct_job(job, tr)
+
+        self.run(work, self.on_directed, "Directing the performance…")
+
+    def on_directed(self, n, err):
+        self.busy(False)
+        if err:
+            QMessageBox.warning(self, "Could not direct", err)
+            return
+        self.fill()
+        self.status.setText(f"{n} line(s) directed. Double-click a Performance cell to fine-tune, then generate.")
+
+    def pick_music(self):
+        p, _ = QFileDialog.getOpenFileName(self, "Choose a music track", str(Path.home() / "Music"),
+                                           "Audio (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.aiff *.aif)")
+        if p:
+            self.music_file.setText(p)
+
+    def new_script(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("New voiceover from a script")
+        dlg.resize(680, 560)
+        f = QFormLayout(dlg)
+        title = QLineEdit()
+        title.setPlaceholderText("e.g. A Million Moments — brand film")
+        lang = QComboBox()
+        for code in TARGETS[:25]:
+            if lang.findData(code) < 0:
+                lang.addItem(LANG_NAMES[code], code)
+        tgt = QComboBox()
+        tgt.addItem("Same language (no translation)", "")
+        for code in TARGETS[:25]:
+            if tgt.findData(code) < 0:
+                tgt.addItem(LANG_NAMES[code], code)
+        text = QPlainTextEdit()
+        text.setPlaceholderText("Paste the script. One sentence per line is not needed — VERBATIM splits sentences. "
+                                "Leave a blank line between paragraphs for a longer pause.")
+        f.addRow("Title", title)
+        f.addRow("Script language", lang)
+        f.addRow("Voice it in", tgt)
+        f.addRow(text)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel, ok = QPushButton("Cancel"), QPushButton("Create")
+        ok.setDefault(True)
+        cancel.clicked.connect(dlg.reject)
+        ok.clicked.connect(dlg.accept)
+        btns.addWidget(cancel)
+        btns.addWidget(ok)
+        f.addRow(btns)
+        if dlg.exec() != QDialog.Accepted or not text.toPlainText().strip():
+            return
+        from .dub import new_script_job
+
+        folder = Path(self.w.s.output_dir) / "Voice Studio scripts"
+        job = new_script_job(text.toPlainText(), lang.currentData(), title.text().strip() or "Voiceover", folder,
+                             tgt.currentData() or "")
+        self.loading = True
+        i = self.lang.findData(job.tgt_lang)
+        if i >= 0:
+            self.lang.setCurrentIndex(i)
+        self.source.addItem(f"Script: {title.text().strip() or 'Voiceover'}", job.source_json)
+        self.source.setCurrentIndex(self.source.count() - 1)
+        self.loading = False
+        self.job = job
+        job.save()
+        self._restore_job_ui()
+        self.fill()
+        self.status.setText("Script ready. Direct the performance, choose a voice and music, then generate."
+                            if all(ln.text for ln in job.lines) else "Script ready — translate it, then generate.")
+
+    # ------------------------------------------------------------ Voice Lab
+    def _lab_view(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(10)
+        v.addWidget(_label("Make a voice from a recording — your own narration, or a speaker who has given consent. "
+                           "VERBATIM removes any music under the voice, picks the cleanest 6–12 seconds and keeps it as "
+                           "the voice reference. Your voices appear at the top of every voice list (★).", "hint", wrap=True))
+        row = QHBoxLayout()
+        b = QPushButton("  Create voice from a recording…")
+        self.w.icons.set(b, "mic2", "ink", 15)
+        b.clicked.connect(self.create_voice)
+        row.addWidget(b)
+        for text, fn in (("Play sample", self.play_lab), ("Import voices…", self.import_voices),
+                         ("Export…", self.export_voices), ("Clone to ElevenLabs", self.clone_eleven),
+                         ("Delete", self.delete_voice)):
+            bb = QPushButton(text)
+            bb.clicked.connect(fn)
+            row.addWidget(bb)
+        row.addStretch()
+        v.addLayout(row)
+        self.ltable = QTableWidget(0, 6)
+        self.ltable.setHorizontalHeaderLabels(["Voice", "Gender", "Character", "Recorded in", "Source", "ElevenLabs"])
+        hh = self.ltable.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(4, QHeaderView.Stretch)
+        hh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.ltable.verticalHeader().setVisible(False)
+        self.ltable.verticalHeader().setDefaultSectionSize(40)
+        self.ltable.setShowGrid(False)
+        self.ltable.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.ltable.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.ltable.setSelectionMode(QAbstractItemView.SingleSelection)
+        v.addWidget(self.ltable, 1)
+        v.addWidget(_label("Voice engines", "h2"))
+        self.packs_box = QVBoxLayout()
+        v.addLayout(self.packs_box)
+        row = QHBoxLayout()
+        self.lnote = _label("", "hint", wrap=True)
+        row.addWidget(self.lnote, 1)
+        b = QPushButton("Test voice engines")
+        b.setToolTip("Speaks a test line with every installed engine and your voices, and saves the results in "
+                     "“VERBATIM diagnostics” inside your output folder.")
+        b.clicked.connect(self.run_diag)
+        row.addWidget(b)
+        v.addLayout(row)
+        self.lids = []
+        return w
+
+    def run_diag(self):
+        out = Path(self.w.s.output_dir) / "VERBATIM diagnostics"
+
+        def work(progress):
+            from .voicelab import run_diagnostics
+
+            return run_diagnostics(out, progress)
+
+        self.run(work, lambda rep, err: (self.busy(False), QMessageBox.warning(self, "Diagnostics failed", err) if err
+                                         else (_open(rep.parent), self.status.setText("Diagnostics saved."))),
+                 "Testing voice engines…")
+
+    def load_lab(self):
+        from . import tts, tts_chatterbox, voicelab
+
+        try:
+            voicelab.import_bundled()
+        except Exception:
+            pass
+        vs = voicelab.library()
+        self.ltable.setRowCount(len(vs))
+        self.lids = []
+        for i, cv in enumerate(vs):
+            for j, val in enumerate([cv.name, cv.gender, cv.character, LANG_NAMES.get(cv.lang, cv.lang), cv.source,
+                                     "cloned" if cv.eleven_id else "—"]):
+                self.ltable.setItem(i, j, QTableWidgetItem(val))
+            self.lids.append(cv.id)
+        while self.packs_box.count():
+            it = self.packs_box.takeAt(0)
+            if it.layout():
+                while it.layout().count():
+                    ww = it.layout().takeAt(0).widget()
+                    if ww:
+                        ww.deleteLater()
+            elif it.widget():
+                it.widget().deleteLater()
+        packs = [("cb", "Expressive voices — Chatterbox (emotion, 23 languages incl. Hindi & Hebrew, speaks your "
+                        "custom voices)", tts_chatterbox.SIZE_MB),
+                 ("zv", "ZipVoice — fast English voice cloning", tts.ENGINES["zv"]["size_mb"]),
+                 ("st", "Studio voices — Supertonic (10 voices × 31 languages)", tts.ENGINES["st"]["size_mb"]),
+                 ("ko", "Kokoro — Chinese and extra English voices", tts.ENGINES["ko"]["size_mb"])]
+        for key, text, mb in packs:
+            row = QHBoxLayout()
+            ok = tts.is_installed(key)
+            row.addWidget(_label(("✓  " if ok else "○  ") + text, "sub" if ok else "hint", wrap=True), 1)
+            if not ok:
+                b = QPushButton(f"Download ({mb / 1000:.1f} GB)" if mb >= 1000 else f"Download ({mb} MB)")
+                b.clicked.connect(lambda _=False, k=key: self.download_pack(k))
+                row.addWidget(b)
+            self.packs_box.addLayout(row)
+        self.lnote.setText(f"{len(vs)} custom voice(s). Everything above runs offline once downloaded.")
+
+    def download_pack(self, key: str):
+        def work(progress):
+            from . import tts
+
+            tts.ensure(key, progress)
+            return key
+
+        self.run(work, self.on_pack, "Downloading voice engine (one time)…")
+
+    def on_pack(self, key, err):
+        self.busy(False)
+        if err:
+            QMessageBox.warning(self, "Download failed", err)
+        else:
+            self.status.setText("Voice engine installed — works offline from now on.")
+        self.load_lab()
+        self.fill_voices()
+
+    def _selected_voice(self):
+        rows = self.ltable.selectionModel().selectedRows()
+        return self.lids[rows[0].row()] if rows else None
+
+    def create_voice(self):
+        import getpass
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Create a voice from a recording")
+        dlg.resize(560, 420)
+        f = QFormLayout(dlg)
+        path = QLineEdit()
+        path.setReadOnly(True)
+        pick = QPushButton("Choose…")
+        pr = QHBoxLayout()
+        pr.addWidget(path, 1)
+        pr.addWidget(pick)
+        pick.clicked.connect(lambda: path.setText(QFileDialog.getOpenFileName(
+            dlg, "Recording", str(Path.home()), "Audio or video (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.mp4 *.mov)")[0]
+            or path.text()))
+        name = QLineEdit()
+        name.setPlaceholderText("e.g. Rakschit — warm narrator")
+        gender = QComboBox()
+        gender.addItems(["male", "female"])
+        character = QLineEdit("warm narrator")
+        lang = QComboBox()
+        for code in ("en", "hi", "es", "fr", "de", "it", "pt", "ru", "ja", "zh", "he", "ar"):
+            lang.addItem(LANG_NAMES[code], code)
+        owner = QLineEdit(getpass.getuser())
+        owner.setPlaceholderText("Whose voice is this?")
+        rights = QCheckBox("I own this recording, or the speaker has given written consent to clone their voice.")
+        rights.setStyleSheet("QCheckBox { font-weight: 600; }")
+        f.addRow("Recording", pr)
+        f.addRow("Voice name", name)
+        f.addRow("Gender", gender)
+        f.addRow("Character", character)
+        f.addRow("Recorded in", lang)
+        f.addRow("Speaker", owner)
+        f.addRow(rights)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel, ok = QPushButton("Cancel"), QPushButton("Create voice")
+        ok.setDefault(True)
+        cancel.clicked.connect(dlg.reject)
+        ok.clicked.connect(dlg.accept)
+        btns.addWidget(cancel)
+        btns.addWidget(ok)
+        f.addRow(btns)
+        while dlg.exec() == QDialog.Accepted:
+            if not path.text() or not name.text().strip() or not owner.text().strip():
+                QMessageBox.warning(dlg, "Missing information", "Choose a recording, name the voice and the speaker.")
+                continue
+            if not rights.isChecked():
+                QMessageBox.warning(dlg, "Consent needed", "Confirm you own the recording or hold the speaker's consent.")
+                continue
+            break
+        else:
+            return
+        from .consent import ConsentRegister
+
+        reg = ConsentRegister()
+        e = reg.valid_for(owner.text().strip()) or reg.add_declaration(
+            owner.text().strip(), f"I confirm I own the recording “{Path(path.text()).name}” or hold the speaker's "
+            f"written consent to create the voice “{name.text().strip()}” for Infinite Story LLP work.",
+            recorded_by=getpass.getuser())
+        args = dict(path=path.text(), name=name.text().strip(), gender=gender.currentText(),
+                    character=character.text().strip() or "custom voice", lang=lang.currentData(),
+                    owner=owner.text().strip(), rights="declared in VERBATIM", consent_id=e["id"])
+
+        def work(progress):
+            from .voicelab import create_from_recording
+
+            return create_from_recording(progress=progress, **args)
+
+        self.sub.button(1).setChecked(True)
+        self.run(work, self.on_voice_created, "Creating the voice…")
+
+    def on_voice_created(self, cv, err):
+        self.busy(False)
+        if err:
+            QMessageBox.warning(self, "Could not create the voice", err)
+            return
+        self.log.emit(f"Custom voice created: {cv.name}")
+        self.status.setText(f"Voice “{cv.name}” is ready — it is now at the top of the voice lists.")
+        self.load_lab()
+        self.fill_voices()
+        self._refresh_log()
+
+    def play_lab(self):
+        vid = self._selected_voice()
+        if not vid:
+            return
+        from .voicelab import get
+
+        cv = get(vid)
+        if cv and cv.ref_wav.exists():
+            from .gui_editor import AudioPlayer
+
+            if self.preview_player is None:
+                self.preview_player = AudioPlayer()
+            self.preview_player.play(cv.ref_wav, 0.0, 30.0)
+
+    def clone_eleven(self):
+        vid = self._selected_voice()
+        if not vid:
+            return
+        from .voicelab import get, save
+
+        cv = get(vid)
+        if QMessageBox.question(self, "Clone to ElevenLabs", f"Upload the reference recording of “{cv.name}” to your "
+                                "ElevenLabs account to create an instant voice clone? The audio leaves this "
+                                "computer.") != QMessageBox.Yes:
+            return
+
+        def work(progress):
+            from .tts_cloud import ElevenLabs
+
+            files = [p for p in (cv.folder / "full_voice.wav", cv.ref_wav) if p.exists()][:1] or [cv.ref_wav]
+            cv.eleven_id = ElevenLabs().clone(f"{cv.name} (VERBATIM)", files)
+            save(cv)
+            return cv
+
+        self.run(work, lambda c, e: (self.busy(False), e and QMessageBox.warning(self, "Clone failed", e),
+                                     self.load_lab()), "Uploading to ElevenLabs…")
+
+    def import_voices(self):
+        import getpass
+
+        from .voicelab import PACK_EXT, import_pack
+
+        p, _ = QFileDialog.getOpenFileName(self, "Import voices", str(Path.home()), f"VERBATIM voices (*{PACK_EXT})")
+        if not p:
+            return
+        if QMessageBox.question(self, "Import voices", "Only import voices you have the right to use. The owner named "
+                                "in the pack is recorded in the consent register. Continue?") != QMessageBox.Yes:
+            return
+        try:
+            got = import_pack(p, recorded_by=getpass.getuser())
+        except Exception as exc:
+            QMessageBox.warning(self, "Import failed", str(exc))
+            return
+        self.status.setText(f"Imported {len(got)} voice(s): " + ", ".join(cv.name for cv in got) if got else
+                            "Those voices are already in your library.")
+        self.load_lab()
+        self.fill_voices()
+        self._refresh_log()
+
+    def export_voices(self):
+        from .voicelab import PACK_EXT, export_pack
+
+        vid = self._selected_voice()
+        ids = [vid] if vid else list(self.lids)
+        if not ids:
+            return
+        p, _ = QFileDialog.getSaveFileName(self, "Export voices", str(Path.home() / f"VERBATIM voices{PACK_EXT}"),
+                                           f"VERBATIM voices (*{PACK_EXT})")
+        if p:
+            out = export_pack(ids, p)
+            self.status.setText(f"Exported {len(ids)} voice(s) to {out.name} — share it privately.")
+
+    def delete_voice(self):
+        vid = self._selected_voice()
+        if vid and QMessageBox.question(self, "Delete voice", "Delete this custom voice from this computer?") \
+                == QMessageBox.Yes:
+            from .voicelab import delete
+
+            delete(vid)
+            self.load_lab()
+            self.fill_voices()
 
     # ------------------------------------------------------------ consent register
     def _consent_view(self):

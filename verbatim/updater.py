@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """Self-updater.
 
 Release channel = a `latest.json` manifest published with each GitHub Release:
@@ -109,6 +112,77 @@ def check(manifest_url: str) -> UpdateInfo | None:
     if not a:
         return None
     return UpdateInfo(manifest["version"], manifest.get("notes", ""), a["url"], a["sha256"].lower(), manifest)
+
+
+# ---------------------------------------------------------------- GitHub connection (built in, no login)
+# VERBATIM reads public GitHub Releases, so no account, password or token is needed. A dedicated public
+# "verbatim-releases" repository is tried first, so the source repository can be made private later
+# without breaking updates; the main repository is the fallback.
+GITHUB_OWNER = "Rakschit-B"
+GITHUB_REPOS = ("verbatim-releases", "Verbatim")
+
+
+def channel_urls(configured: str = "") -> list[str]:
+    urls = [f"https://github.com/{GITHUB_OWNER}/{r}/releases/latest/download/latest.json" for r in GITHUB_REPOS]
+    if configured and configured not in urls:
+        urls.insert(0, configured)
+    return urls
+
+
+def releases_page(url: str) -> str:
+    return url.split("/releases/")[0] + "/releases" if "/releases/" in url else url
+
+
+@dataclass
+class ChannelStatus:
+    reachable: bool = False          # GitHub answered
+    url: str = ""                    # manifest that answered (with a release) or the first tried
+    latest: str = ""                 # newest published version ("" = nothing published yet)
+    update: UpdateInfo | None = None
+    error: str = ""
+
+    @property
+    def repo(self) -> str:
+        return self.url.split("github.com/")[-1].split("/releases")[0] if "github.com/" in self.url else self.url
+
+    def summary(self) -> str:
+        if not self.reachable:
+            return f"Can't reach GitHub right now ({self.error or 'offline'}). VERBATIM will try again later."
+        if not self.latest:
+            return f"Connected to GitHub ({self.repo}) — no release published yet."
+        if self.update:
+            return f"Connected to GitHub ({self.repo}) — VERBATIM {self.latest} is available."
+        return f"Connected to GitHub ({self.repo}) — you have the latest version ({__version__})."
+
+
+def check_github(configured: str = "", get=None) -> ChannelStatus:
+    """Try each release channel; first one with a manifest wins. Never raises."""
+    import urllib.error
+
+    get = get or _get
+    st = ChannelStatus(url=channel_urls(configured)[0])
+    for url in channel_urls(configured):
+        try:
+            manifest = json.loads(get(url))
+        except urllib.error.HTTPError as exc:   # 404 = repository has no release (or doesn't exist)
+            st.reachable = True
+            st.error = f"HTTP {exc.code}"
+            continue
+        except Exception as exc:
+            st.error = type(exc).__name__ if not str(exc) else str(exc)[:80]
+            continue
+        st.reachable, st.url, st.error = True, url, ""
+        if not verify_signature(manifest):
+            st.error = "manifest signature invalid — update refused"
+            return st
+        st.latest = str(manifest.get("version", ""))
+        if st.latest and parse_version(st.latest) > parse_version(__version__):
+            key = platform_key() if FROZEN else "source"
+            a = manifest.get("assets", {}).get(key) or manifest.get("assets", {}).get("source")
+            if a:
+                st.update = UpdateInfo(st.latest, manifest.get("notes", ""), a["url"], a["sha256"].lower(), manifest)
+        return st
+    return st
 
 
 def download(info: UpdateInfo, progress=None) -> Path:

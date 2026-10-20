@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """3.3: voice library, TranslateGemma prompt + local server lifecycle, Claude polish/shorten, meaning check."""
 import json
 import sys

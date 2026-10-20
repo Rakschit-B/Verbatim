@@ -1,7 +1,7 @@
 # Third-party components
 
-VERBATIM's own code is MIT-licensed. It uses, downloads or bundles the following; check each licence
-before commercial redistribution of the packaged app.
+VERBATIM's own code is proprietary to Infinite Story LLP (see LICENSE). It uses, downloads or bundles the
+following third-party components, which remain under their own licences; their notices must be kept.
 
 | Component | Use | Licence |
 |---|---|---|
@@ -26,6 +26,13 @@ before commercial redistribution of the packaged app.
 | FFmpeg (system or imageio-ffmpeg build) | media decoding | LGPL/GPL depending on build — the imageio-ffmpeg binaries are GPL builds; ship the source offer or use a system FFmpeg if this matters for your distribution |
 | openpyxl, python-docx, rapidfuzz, requests, keyring, cryptography, numpy | utilities | MIT / BSD / Apache-2.0 / PSF |
 | ElevenLabs Scribe API | optional cloud engine | ElevenLabs terms of service (no code bundled) |
+| Resemble AI Chatterbox Multilingual (ONNX export by onnx-community) | Expressive voices & voice cloning, 23 languages | MIT |
+| ZipVoice (k2-fsa; sherpa-onnx int8 export) + Vocos 24 kHz vocoder | local English/Chinese voice cloning | Apache-2.0 (trained on the Emilia dataset — check its terms for commercial use) |
+| UVR MDX-Net Voc FT (Ultimate Vocal Remover; sherpa-onnx export) | separating voice from music | MIT |
+| tokenizers (Hugging Face) | Chatterbox text tokenizer | Apache-2.0 |
+| pykakasi | Japanese reading for Chatterbox | GPL-3.0-or-later → optional, not bundled |
+| ElevenLabs text-to-speech / voice cloning API | optional cloud voices (user's own key) | ElevenLabs terms of service (no code bundled) |
+| Microsoft Azure AI Speech (Neural TTS REST API) | optional cloud voices (user's own key) | Microsoft terms (no code bundled) |
 | `tests/data/jfk.flac` (from openai/whisper tests) | test fixture | MIT |
 
 No code from MacWhisper, TurboScribe, Fireflies, Cockatoo or ElevenLabs' proprietary services is included;

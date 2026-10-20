@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """Per-file transcription pipeline and the resumable batch runner.
 
     decode audio -> VAD speech map -> primary engine -> vocabulary repair ->

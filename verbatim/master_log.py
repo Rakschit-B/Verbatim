@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """Master Excel Transcription Log.
 
 A cumulative, append-only SQLite ledger (<output>/.verbatim/ledger.sqlite) records every

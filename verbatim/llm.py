@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """Local LLM runtime for offline translation: llama.cpp's `llama-server` + a GGUF model.
 
 The llama.cpp binaries (MIT) are downloaded once from the official GitHub releases (Metal build on
@@ -18,7 +21,11 @@ from pathlib import Path
 
 from .platform_info import IS_MAC, IS_WINDOWS
 
-RELEASES_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+# Pinned, tested llama.cpp build. 3.4: the app ships llama-server inside (fully offline); this download is
+# only the fallback for source installs. (3.3 looked for ".zip" assets — llama.cpp switched its Mac and
+# Linux builds to ".tar.gz", which caused "Could not find the llama.cpp build for this computer".)
+LLAMA_TAG = "b11750"
+LLAMA_URL = "https://github.com/ggml-org/llama.cpp/releases/download/{tag}/llama-{tag}-bin-{suffix}"
 
 # name -> candidate (repo, file) on Hugging Face, tried in order; size for the download prompt
 MODELS = {
@@ -40,40 +47,67 @@ def root() -> Path:
 
 
 def _asset_suffix() -> str:
+    arm = platform.machine().lower() in ("arm64", "aarch64")
     if IS_MAC:
-        return "bin-macos-arm64.zip" if platform.machine() == "arm64" else "bin-macos-x64.zip"
+        return "macos-arm64.tar.gz" if arm else "macos-x64.tar.gz"
     if IS_WINDOWS:
-        return "bin-win-cpu-x64.zip"
-    return "bin-ubuntu-x64.zip"
+        return "win-cpu-arm64.zip" if arm else "win-cpu-x64.zip"
+    return "ubuntu-arm64.tar.gz" if arm else "ubuntu-x64.tar.gz"
+
+
+def _exe() -> str:
+    return "llama-server.exe" if IS_WINDOWS else "llama-server"
+
+
+def bundled_server() -> Path | None:
+    """llama-server shipped inside the VERBATIM app (resources/llama.cpp)."""
+    from .platform_info import resource_root
+
+    d = resource_root() / "llama.cpp"
+    hits = sorted(d.rglob(_exe())) if d.exists() else []
+    return hits[0] if hits else None
 
 
 def server_path() -> Path | None:
-    exe = "llama-server.exe" if IS_WINDOWS else "llama-server"
-    hits = sorted((root() / "llama.cpp").rglob(exe)) if (root() / "llama.cpp").exists() else []
+    b = bundled_server()
+    if b:
+        return b
+    hits = sorted((root() / "llama.cpp").rglob(_exe())) if (root() / "llama.cpp").exists() else []
     return hits[0] if hits else None
+
+
+def _extract(archive: Path, dest: Path):
+    import tarfile
+
+    if archive.name.endswith(".zip"):
+        with zipfile.ZipFile(archive) as z:
+            for name in z.namelist():
+                if name.startswith("/") or ".." in Path(name).parts:
+                    raise RuntimeError("Unsafe path in llama.cpp archive")
+            z.extractall(dest)
+    else:
+        with tarfile.open(archive) as t:
+            for m in t.getmembers():
+                if m.name.startswith("/") or ".." in Path(m.name).parts:
+                    raise RuntimeError("Unsafe path in llama.cpp archive")
+            try:
+                t.extractall(dest, filter="data")
+            except TypeError:
+                t.extractall(dest)
 
 
 def ensure_server(progress=None) -> Path:
     p = server_path()
     if p:
         return p
-    req = urllib.request.Request(RELEASES_API, headers={"User-Agent": "VERBATIM", "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        rel = json.loads(r.read())
-    asset = next((a for a in rel.get("assets", []) if a["name"].endswith(_asset_suffix())), None)
-    if not asset:
-        raise RuntimeError("Could not find the llama.cpp build for this computer")
     from .download import fetch
 
+    url = LLAMA_URL.format(tag=LLAMA_TAG, suffix=_asset_suffix())
     dest = root() / "llama.cpp"
     dest.mkdir(parents=True, exist_ok=True)
-    tmp = root() / asset["name"]
-    fetch(asset["browser_download_url"], tmp, progress, "translation engine (llama.cpp)")
-    with zipfile.ZipFile(tmp) as z:
-        for name in z.namelist():
-            if name.startswith("/") or ".." in Path(name).parts:
-                raise RuntimeError("Unsafe path in llama.cpp archive")
-        z.extractall(dest)
+    tmp = root() / url.rsplit("/", 1)[-1]
+    fetch(url, tmp, progress, "translation engine (llama.cpp)")
+    _extract(tmp, dest)
     tmp.unlink(missing_ok=True)
     p = server_path()
     if not p:
@@ -133,7 +167,13 @@ class LlamaServer:
             cmd += ["-ngl", "99"]
         flags = 0x08000000 if IS_WINDOWS else 0
         log = open(root() / "llama-server.log", "w", encoding="utf-8", errors="replace")
-        self.proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=str(self.server.parent),
+        env = dict(os.environ)
+        libdir = str(self.server.parent)
+        for var in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
+            env[var] = libdir + (os.pathsep + env[var] if env.get(var) else "")
+        if IS_WINDOWS:
+            env["PATH"] = libdir + os.pathsep + env.get("PATH", "")
+        self.proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=libdir, env=env,
                                      creationflags=flags)
         t0 = time.time()
         while time.time() - t0 < 300:

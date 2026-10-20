@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """Fast & accurate routing (the default).
 
 Benchmarks: NVIDIA Parakeet was both the most accurate (3.8–4.0 % WER on earnings calls)

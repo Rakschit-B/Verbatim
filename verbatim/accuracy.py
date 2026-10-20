@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """Word-error-rate measurement against a human-verified reference.
 
 Follows the Hugging Face Open ASR Leaderboard convention: normalise both texts

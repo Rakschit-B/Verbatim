@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """Phase 3: translation engines (mocked network), voice jobs, subtitles, consent register."""
 import json
 
@@ -77,7 +80,7 @@ def test_render_timing_fit_and_outputs(tmp_path):
         ln.text = ln.source
 
     class FakeSynth:  # speech whose length depends on text length and speed
-        def speak(self, text, lang, sid, speed):
+        def speak(self, text, lang, sid, speed, direction=None):
             n = int(dub.SR * 0.2 * len(text) / speed)
             return (0.2 * np.sin(np.arange(n) / 20)).astype(np.float32)
 

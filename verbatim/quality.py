@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """Accuracy safeguards: hallucination removal, missed-speech detection, confidence review.
 
 Nothing here rewrites what was said. Text is only *removed* when it is a known

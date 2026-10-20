@@ -1,4 +1,4 @@
-# VERBATIM 3.3 — by Infinite Story
+# VERBATIM 3.4 — an Infinite Story LLP product
 
 **Every word. Every moment.** VERBATIM 3.0 introduces the new interface and three modules:
 
@@ -20,6 +20,8 @@ languages. Details and measurements: [docs/PHASE2.md](docs/PHASE2.md).
 **New in 3.2 (Phase 3 — Voice Studio part 1):** translation (offline or Claude API), Hindi/English and
 6 more languages of local voiceover with automatic timing fit, dubbed MP4 + translated subtitles,
 and the voice consent register. Details: [docs/PHASE3.md](docs/PHASE3.md).
+
+**New in 3.4:** emotional, directed voiceovers (Chatterbox expressive voices, performance direction per line), Voice Lab (your own voice from any recording, music removed automatically), music beds that follow the voice, voiceovers from a written script, optional ElevenLabs and Azure voices, GitHub updates panel, bundled offline voices and translation engine. See docs/VOICE-3.4.md. © 2026 Infinite Story LLP — proprietary, see LICENSE.
 
 **New in 3.3:** Supertonic 3 voices (10 natural voices × 31 languages), offline TranslateGemma translation
 (55 languages), Claude translation with styles + native-speaker polish, meaning check and auto-shortening.

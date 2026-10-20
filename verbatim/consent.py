@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """Voice consent register — required before any voice can be cloned (Voice Studio, Phase 4).
 
 Each entry records who gave consent, the signed form (copied into the VERBATIM data folder so it
@@ -59,6 +62,18 @@ class ConsentRegister:
         self.entries.append(e)
         self.save()
         return e
+
+    def add_declaration(self, person: str, statement: str, scope: str = "Voice cloning for all Infinite Story work",
+                        recorded_by: str = "", notes: str = "") -> dict:
+        """Owner's own voice (or a recording they hold the rights to): a written declaration, stored as the form."""
+        import tempfile
+
+        tmp = Path(tempfile.mkdtemp()) / "declaration.txt"
+        tmp.write_text(f"VOICE RIGHTS DECLARATION — VERBATIM (Infinite Story LLP)\n\nPerson: {person}\n"
+                       f"Recorded by: {recorded_by}\nDate: {datetime.now().isoformat(timespec='seconds')}\n\n{statement}\n",
+                       encoding="utf-8")
+        return self.add(person, tmp, scope, date.today().isoformat(), notes=notes or "Self-declaration",
+                        recorded_by=recorded_by)
 
     def revoke(self, eid: str, reason: str = ""):
         for e in self.entries:

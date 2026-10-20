@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """Speech-model catalogue: bundled models, one-click downloads and model updates.
 
 * NVIDIA Parakeet v2 (English) ships INSIDE the app — works offline from the first launch.

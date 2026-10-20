@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """Create latest.json for a GitHub Release (SHA-256 of every asset + optional Ed25519 signature).
 
   python scripts/release/make_manifest.py --version 2.1.0 --base-url https://github.com/<owner>/<repo>/releases/download/v2.1.0 \

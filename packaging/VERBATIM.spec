@@ -13,6 +13,11 @@ IS_MAC = sys.platform == "darwin"
 datas = [(str(ROOT / "assets"), "assets")]
 if (ROOT / "bundled_models").exists():  # e.g. bundled_models/sherpa/<parakeet folder> -> ships inside the app
     datas.append((str(ROOT / "bundled_models"), "models"))
+if (ROOT / "llama.cpp").exists():       # llama-server for offline translation (3.4: shipped inside the app)
+    datas.append((str(ROOT / "llama.cpp"), "llama.cpp"))
+for _doc in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
+    if (ROOT / _doc).exists():
+        datas.append((str(ROOT / _doc), "."))
 binaries = []
 if not IS_MAC:
     # Collect Qt plugins explicitly: PyInstaller's PySide6 hook can miss them when it cannot query Qt
@@ -39,13 +44,28 @@ a = Analysis([str(ROOT / "run.py")], pathex=[str(ROOT)], binaries=binaries, data
              excludes=["tkinter", "matplotlib", "torch", "tensorflow", "IPython", "pytest"], noarchive=False)
 pyz = PYZ(a.pure)
 
+VERSION_INFO = None
+if not IS_MAC:  # Windows file properties: Infinite Story LLP as the company, copyright, product version
+    from PyInstaller.utils.win32.versioninfo import (FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+                                                     VarFileInfo, VarStruct, VSVersionInfo)
+
+    _t = tuple(int(x) for x in __version__.split(".")[:3]) + (0,)
+    VERSION_INFO = VSVersionInfo(ffi=FixedFileInfo(filevers=_t, prodvers=_t), kids=[
+        StringFileInfo([StringTable("040904B0", [
+            StringStruct("CompanyName", "Infinite Story LLP"), StringStruct("FileDescription", "VERBATIM"),
+            StringStruct("FileVersion", __version__), StringStruct("InternalName", "VERBATIM"),
+            StringStruct("LegalCopyright", "Copyright (c) 2026 Infinite Story LLP. All rights reserved."),
+            StringStruct("OriginalFilename", "VERBATIM.exe"), StringStruct("ProductName", "VERBATIM"),
+            StringStruct("ProductVersion", __version__)])]),
+        VarFileInfo([VarStruct("Translation", [1033, 1200])])])
+
 gui = EXE(pyz, a.scripts, [], exclude_binaries=True, name="VERBATIM", console=False,
           icon=str(ROOT / "assets" / ("VERBATIM.icns" if IS_MAC else "VERBATIM.ico")),
-          target_arch="arm64" if IS_MAC else None, upx=False)
+          target_arch="arm64" if IS_MAC else None, upx=False, version=VERSION_INFO)
 exes = [gui]
 if not IS_MAC:  # console twin for scripts / scheduled updates on Windows
     exes.append(EXE(pyz, a.scripts, [], exclude_binaries=True, name="verbatim-cli", console=True,
-                    icon=str(ROOT / "assets" / "VERBATIM.ico"), upx=False))
+                    icon=str(ROOT / "assets" / "VERBATIM.ico"), upx=False, version=VERSION_INFO))
 
 coll = COLLECT(*exes, a.binaries, a.datas, strip=False, upx=False, name="VERBATIM")
 
@@ -55,8 +75,8 @@ if IS_MAC:
                  info_plist={
                      "CFBundleName": "VERBATIM", "CFBundleDisplayName": "VERBATIM",
                      "CFBundleShortVersionString": __version__, "CFBundleVersion": __version__,
+                     "NSHumanReadableCopyright": "© 2026 Infinite Story LLP. All rights reserved.",
                      "LSMinimumSystemVersion": "13.3", "NSHighResolutionCapable": True,
-                     "NSHumanReadableCopyright": "© Infinite Story",
                      "CFBundleDocumentTypes": [{"CFBundleTypeName": "Media", "CFBundleTypeRole": "Viewer",
                                                 "LSItemContentTypes": ["public.movie", "public.audio"]}],
                  })

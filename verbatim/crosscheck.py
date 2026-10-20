@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """Two-engine cross-check (inspired by ROVER system combination).
 
 Two independent models rarely make the *same* mistake. Aligning the primary transcript

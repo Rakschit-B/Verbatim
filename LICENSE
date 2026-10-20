@@ -1,21 +1,41 @@
-MIT License
+VERBATIM — END-USER LICENCE AGREEMENT
+Copyright (c) 2026 Infinite Story LLP. All rights reserved.
 
-Copyright (c) 2026 Infinite Story
+VERBATIM (the "Software"), including its source code, object code, user interface, designs, voice
+library, presets, documentation and all updates, is the proprietary property of Infinite Story LLP,
+India ("Infinite Story"), and is protected by copyright and other intellectual-property laws.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. Licence. Infinite Story grants you a personal, non-exclusive, non-transferable, revocable licence
+   to install and use the Software only (a) as an employee or authorised contractor of Infinite Story,
+   or (b) under a separate written agreement with Infinite Story.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+2. Restrictions. You may not, and may not permit anyone to: copy, modify, translate or create
+   derivative works of the Software; decompile, disassemble or reverse-engineer it (except to the
+   extent the law expressly permits despite this restriction); rent, lend, sell, sublicense, publish
+   or distribute it; remove or alter any proprietary notice; or use it to build a competing product.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+3. Voices and consent. Custom and cloned voices may be created only from recordings you own or for
+   which you hold the speaker's documented consent, recorded in VERBATIM's consent register. You are
+   responsible for the lawful use of every voice and output you create.
+
+4. Third-party components. The Software includes third-party open-source components and AI models
+   that are licensed to you under their own terms, listed in THIRD_PARTY_NOTICES.md. Nothing in this
+   agreement limits your rights under those licences for those components.
+
+5. Ownership of outputs. Transcripts, translations, voiceovers and mixes you create belong to you or
+   your client, subject to the rights in the source material and the terms of any cloud service you
+   choose to use.
+
+6. No warranty. The Software is provided "as is", without warranty of any kind. To the maximum extent
+   permitted by law, Infinite Story is not liable for any indirect, incidental or consequential loss.
+
+7. Termination. This licence ends automatically if you breach it, or when your engagement with
+   Infinite Story ends; you must then delete all copies.
+
+8. Governing law. This agreement is governed by the laws of India; courts at New Delhi have
+   exclusive jurisdiction.
+
+Note: versions of VERBATIM released before 3.4.0 were distributed under the MIT licence; copies
+already received under that licence remain under it. This agreement applies from version 3.4.0.
+
+Infinite Story LLP — https://infinitestory.in

@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """Speaker library: name a voice once, VERBATIM recognises it in later files.
 
 Each diarised speaker in a file gets a voice fingerprint (NVIDIA TitaNet embedding, computed

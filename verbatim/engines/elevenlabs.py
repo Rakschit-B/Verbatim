@@ -1,3 +1,6 @@
+# Copyright © 2026 Infinite Story LLP. All rights reserved.
+# VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
+# distribution of this file, via any medium, is strictly prohibited.
 """ElevenLabs Scribe v2 (cloud) — highest-accuracy option, optional and opt-in.
 
 Scribe v2 is #6 on the Open ASR Leaderboard snapshot (mean WER 5.83% vs 7.44% for
