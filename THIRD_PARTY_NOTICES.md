@@ -13,6 +13,9 @@ before commercial redistribution of the packaged app.
 | NVIDIA TitaNet small (speaker embeddings) | diarisation | CC-BY-4.0 (attribution: NVIDIA) |
 | pyannote segmentation-3.0 | diarisation | MIT |
 | Meta Omnilingual ASR 300M CTC (sherpa-onnx int8 export) | precise word timing (forced alignment) | Apache-2.0 |
+| Supertonic 3 (Supertone Inc.; sherpa-onnx int8 export) | Voice Studio voices (10 voices × 31 languages) | code MIT; model OpenRAIL-M (use restrictions apply) |
+| Google TranslateGemma 4B / 12B (GGUF quantisations) | Voice Studio offline translation | Gemma Terms of Use + Prohibited Use Policy |
+| llama.cpp (ggml-org) | runs TranslateGemma locally | MIT |
 | Kokoro-82M v1.0 (hexgrad; sherpa-onnx export) | Voice Studio stock voices | Apache-2.0 |
 | OPUS-MT translation models via Argos Translate packages | Voice Studio offline translation | CC-BY-4.0 (models; attribution: Helsinki-NLP / OPUS-MT) |
 | CTranslate2 (OpenNMT), SentencePiece (Google) | offline translation runtime | MIT / Apache-2.0 |

@@ -1,4 +1,4 @@
-VERBATIM 3.2 by Infinite Story — Mac (Apple Silicon: M1/M2/M3/M4)
+VERBATIM 3.3 by Infinite Story — Mac (Apple Silicon: M1/M2/M3/M4)
 
 INSTALL
 1. Drag VERBATIM onto the Applications folder in this window.

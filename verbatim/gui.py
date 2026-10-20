@@ -407,10 +407,12 @@ class ModelWorker(QObject):
         self.jobs = jobs  # [(key, entry-or-None)]
 
     def run(self):
+        from . import llm, tts
         from .models import CATALOG, download
 
         ok = []
         for key, entry in self.jobs:
+            label = extra_model_label(key) or CATALOG[key]["label"]
             try:
                 last = [0.0]
 
@@ -418,11 +420,27 @@ class ModelWorker(QObject):
                     if f - last[0] >= 0.05 or f >= 1:
                         last[0] = f
                         self.progress.emit(m)
-                download(key, cb, entry)
-                ok.append(CATALOG[key]["label"])
+                if key.startswith("tts-"):
+                    tts.ensure(key[4:], cb)
+                elif key.startswith("llm-"):
+                    llm.ensure_server(cb)
+                    llm.ensure_model(key[4:], cb)
+                else:
+                    download(key, cb, entry)
+                ok.append(label)
             except Exception as exc:
-                self.progress.emit(f"Could not download {CATALOG[key]['label']}: {exc}")
+                self.progress.emit(f"Could not download {label}: {exc}")
         self.done.emit(", ".join(ok))
+
+
+def extra_model_label(key: str) -> str:
+    from . import llm, tts
+
+    if key.startswith("tts-"):
+        return f"Voice Studio voices — {tts.ENGINES[key[4:]]['label']}"
+    if key.startswith("llm-"):
+        return f"Offline translation — {llm.MODELS[key[4:]]['label']}"
+    return ""
 
 
 # ====================================================================== queue model
@@ -1866,6 +1884,8 @@ class Window(QMainWindow):
     def fill_models(self):
         from .models import CATALOG, is_installed
 
+        self.models_box.setSpacing(4)
+
         while self.models_box.count():
             it = self.models_box.takeAt(0)
             if it.widget():
@@ -1877,6 +1897,7 @@ class Window(QMainWindow):
                 ok = False
             lab = label(f"{'✓' if ok else '○'}  {m['label']}  ·  {m['size_mb']} MB"
                         f"{'' if ok else '  (downloads when first needed)'}", "sub")
+            lab.setMinimumHeight(22)
             self.models_box.addWidget(lab)
         from . import align
 
@@ -1885,11 +1906,21 @@ class Window(QMainWindow):
                                         f"{align.SIZE_MB} MB{'' if ok else '  (downloads when first needed)'}", "sub"))
         from . import tts
 
-        ok = tts.is_installed()
-        self.models_box.addWidget(label(f"{'✓' if ok else '○'}  Voice Studio voices (Kokoro — English, Hindi + 6 languages)  ·  "
-                                        f"{tts.SIZE_MB} MB{'' if ok else '  (downloads when first needed)'}", "sub"))
-        self.models_box.addWidget(label("○  Offline translation models (OPUS-MT) · about 100 MB per language pair, "
-                                        "downloaded when first used", "sub"))
+        for eng in ("st", "ko"):
+            ok = tts.is_installed(eng)
+            self.models_box.addWidget(label(f"{'✓' if ok else '○'}  Voice Studio voices — {tts.ENGINES[eng]['label']}  ·  "
+                                            f"{tts.ENGINES[eng]['size_mb']} MB{'' if ok else '  (downloads when first needed)'}",
+                                            "sub"))
+        from . import llm
+
+        for key, m in llm.MODELS.items():
+            ok = llm.model_path(key) is not None
+            self.models_box.addWidget(label(f"{'✓' if ok else '○'}  Offline translation — {m['label']}"
+                                            f"{'' if ok else '  (downloads when first used)'}", "sub"))
+        for i in range(self.models_box.count()):
+            w = self.models_box.itemAt(i).widget()
+            if w:
+                w.setMinimumHeight(22)
 
     def change_theme(self, i: int):
         self.s.theme = ("light", "dark", "system")[i]
@@ -2211,12 +2242,22 @@ class Window(QMainWindow):
     def offer_models(self):
         from .models import CATALOG, is_installed
 
+        from . import llm, tts
+
         missing = [k for k in ("whisper-turbo", "parakeet-v3") if not is_installed(k)]
+        sizes = {k: CATALOG[k]["size_mb"] for k in missing}
+        for eng in ("st", "ko"):
+            if not tts.is_installed(eng):
+                missing.append(f"tts-{eng}")
+                sizes[f"tts-{eng}"] = tts.ENGINES[eng]["size_mb"]
+        if llm.model_path("translategemma-4b") is None:
+            missing.append("llm-translategemma-4b")
+            sizes["llm-translategemma-4b"] = llm.MODELS["translategemma-4b"]["size_mb"]
         if not missing:
-            QMessageBox.information(self, "Models", "All recommended speech models are already on this computer.")
+            QMessageBox.information(self, "Models", "All recommended models are already on this computer.")
             return
-        size = sum(CATALOG[k]["size_mb"] for k in missing)
-        names = "\n".join(f"• {CATALOG[k]['label']} ({CATALOG[k]['size_mb']} MB)" for k in missing)
+        size = sum(sizes.values())
+        names = "\n".join(f"• {extra_model_label(k) or CATALOG[k]['label']} ({sizes[k]} MB)" for k in missing)
         if QMessageBox.question(self, "Download speech models",
                                 f"Download these once (about {size / 1000:.1f} GB)?\n\n{names}") == QMessageBox.Yes:
             self.start_model_jobs([(k, None) for k in missing])

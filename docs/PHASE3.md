@@ -1,4 +1,24 @@
-# VERBATIM 3.2 — Phase 3 (Voice Studio, part 1)
+# VERBATIM 3.3 — Voice Studio, stronger
+
+## What changed in 3.3 (quality upgrade)
+- **Voices:** new engine **Supertonic 3** — 10 natural studio voices (5 female, 5 male, each with a character:
+  bright, warm, deep, documentary…) that speak 31 languages incl. Hindi, English, Russian, Japanese,
+  Spanish, French, Arabic, German, Italian, Portuguese, Korean, Turkish. Kokoro stays for Chinese and extra
+  English voices. 12 voices for Hindi (was 4). "Studio" quality setting for the richest sound.
+  Measured on the same 2½-minute Hindi test: 17 of 19 lines fit their slot (was 16; 15 at natural pace),
+  2 lines over by only 0.3 s (was up to 1.7 s); rendering 2× faster.
+- **Translation:** new default offline engine **Google TranslateGemma** (4B, or 12B for best quality) running
+  on the computer with llama.cpp — 55 languages incl. Hindi, Hebrew, Russian, Japanese, Chinese, Spanish,
+  French; private and free. OPUS-MT remains as a small fallback.
+- **Claude translation, rebuilt:** sees the whole script for consistency; three styles (Natural spoken,
+  Faithful, Creative transcreation for ads and brand films); per-language guides (e.g. everyday spoken Hindi,
+  modern Israeli Hebrew, polite Japanese narration); a second **native-speaker polish** pass.
+- **Check meaning:** back-translates every line into the original language in a new column, so you can
+  verify a language you don't read.
+- **Shorten long lines:** Claude rewrites lines flagged "too long" to fit their slot.
+- Per-line voice and pace overrides are stored in the job (for the next interface step).
+
+# Phase 3 (Voice Studio, part 1) — original notes
 
 Module **02 Voice Studio** is live: transcript → translation → timed voiceover → exports.
 

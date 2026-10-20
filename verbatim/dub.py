@@ -25,7 +25,7 @@ from .model import Transcript
 from .platform_info import IS_WINDOWS, ffmpeg_path
 from .translate import LANG_NAMES
 
-SR = 24000
+SR = 48000           # voiceover sample rate (tts.SAMPLE_RATE)
 MAX_SPEEDUP = 1.30
 SPLIT_LONGER_THAN = 9.0     # seconds: long transcript segments are split at sentence ends for dubbing
 
@@ -42,6 +42,9 @@ class Line:
     fit: str = ""            # "", "ok", "faster ×1.15", "too long +1.2 s", "shifted +0.4 s"
     speed: float = 1.0
     spoken: float = 0.0      # seconds of generated speech
+    voice: str = ""          # per-line voice override ("" = the speaker's voice)
+    pace: float = 1.0        # per-line pace adjustment (×)
+    check: str = ""          # back-translation into the source language (meaning check)
 
 
 @dataclass
@@ -55,6 +58,8 @@ class VoiceJob:
     lines: list[Line] = field(default_factory=list)
     voices: dict = field(default_factory=dict)     # speaker -> kokoro speaker id
     speed: float = 1.0
+    quality: str = "standard"                      # "standard" | "studio"
+    style: str = "natural"                         # translation style: faithful | natural | creative
     duration: float = 0.0
     created: str = ""
     updated: str = ""
@@ -133,7 +138,8 @@ def _sentences(seg):
 
 
 # ====================================================================== translate
-def translate_job(job: VoiceJob, translator, vocabulary: str = "", progress=None, only_empty: bool = False) -> VoiceJob:
+def translate_job(job: VoiceJob, translator, vocabulary: str = "", progress=None, only_empty: bool = False,
+                  polish: bool = True) -> VoiceJob:
     idx = [k for k, ln in enumerate(job.lines) if not (only_empty and ln.text.strip()) and not ln.edited]
     if not idx:
         return job
@@ -141,15 +147,47 @@ def translate_job(job: VoiceJob, translator, vocabulary: str = "", progress=None
     spk = [job.lines[k].speaker for k in idx]
     ctx = Path(job.media).stem if job.media else ""
     out = translator.translate(src, job.src_lang, job.tgt_lang, vocabulary=vocabulary, context=ctx, speakers=spk,
-                               progress=progress)
+                               progress=progress, style=job.style, polish=polish)
     for k, txt in zip(idx, out):
         job.lines[k].text = txt
         job.lines[k].fit = ""
+        job.lines[k].check = ""
     job.engine = translator.name
     job.model = getattr(translator, "model", "") or ""
     job.translated = datetime.now().isoformat(timespec="seconds")
     job.save()
     return job
+
+
+def check_meaning(job: VoiceJob, translator, progress=None) -> VoiceJob:
+    """Back-translate every line into the source language so a reviewer can verify the meaning."""
+    idx = [k for k, ln in enumerate(job.lines) if ln.text.strip()]
+    back = translator.back_translate([job.lines[k].text for k in idx], job.src_lang, job.tgt_lang, progress=progress)
+    for k, txt in zip(idx, back):
+        job.lines[k].check = txt
+    job.save()
+    return job
+
+
+CHARS_PER_SEC = {"hi": 13.0, "ja": 7.5, "zh": 5.5, "ko": 8.0}
+
+
+def shorten_long_lines(job: VoiceJob, translator, vocabulary: str = "") -> int:
+    """Ask the translator (Claude) to rewrite lines flagged 'too long' to fit their slot. Returns lines changed."""
+    items = []
+    for ln in job.lines:
+        if ln.fit.startswith("too long") and ln.text.strip() and ln.spoken > 0:
+            nxt = next((x.start for x in job.lines[ln.i + 1:] if x.text.strip()), ln.end + 1.0)
+            slot = max(ln.end, nxt - 0.08) - ln.start
+            ratio = max(0.5, min(0.95, slot * 1.25 / ln.spoken))   # what fits after the allowed speed-up
+            items.append((ln.i + 1, ln.source, ln.text, max(8, int(len(ln.text) * ratio))))
+    got = translator.shorten(items, job.src_lang, job.tgt_lang, vocabulary) if items else {}
+    for n, txt in got.items():
+        ln = job.lines[n - 1]
+        if txt and txt != ln.text:
+            ln.text, ln.edited, ln.fit, ln.check = txt, True, "", ""
+    job.save()
+    return len(got)
 
 
 # ====================================================================== voice
@@ -164,9 +202,10 @@ def _trim(a: np.ndarray, thr: float = 0.01) -> np.ndarray:
 
 def render(job: VoiceJob, synth, progress=None, mix: bool = True, video: bool = True) -> dict:
     """Speak every line in its slot, then write voice track, mix, video and subtitles."""
-    from .tts import voices_for
+    from .tts import default_voices
 
-    default_sid = voices_for(job.tgt_lang)[0][0] if voices_for(job.tgt_lang) else 0
+    spk = job.speakers()
+    defaults = dict(zip(spk, default_voices(job.tgt_lang, len(spk))))
     dur = max(job.duration, max((ln.end for ln in job.lines), default=0) + 2.0)
     track = np.zeros(int(dur * SR) + SR * 10, dtype=np.float32)
     prev_end = 0.0
@@ -177,17 +216,20 @@ def render(job: VoiceJob, synth, progress=None, mix: bool = True, video: bool = 
         if not ln.text.strip():
             ln.fit, ln.spoken = "no translation", 0.0
             continue
-        sid = int(job.voices.get(ln.speaker, default_sid))
+        sid = job.voices.get(ln.speaker) or defaults.get(ln.speaker, "")
+        if ln.voice:
+            sid = ln.voice
         nxt = next((x.start for x in job.lines[k + 1:] if x.text.strip()), dur)
         start = max(ln.start, prev_end + 0.05)       # never overlap the previous voice
         slot = max(ln.end, nxt - 0.08) - start
-        speed = job.speed
+        base = job.speed * (ln.pace or 1.0)
+        speed = base
         a = _trim(synth.speak(ln.text, job.tgt_lang, sid, speed))
         need = len(a) / SR
         for _ in range(3):  # speed up until it fits (speech rate is not exactly proportional to the setting)
-            if need <= slot or slot <= 0.3 or speed >= job.speed * MAX_SPEEDUP - 1e-3:
+            if need <= slot or slot <= 0.3 or speed >= base * MAX_SPEEDUP - 1e-3:
                 break
-            speed = min(job.speed * MAX_SPEEDUP, speed * need / slot * 1.04)
+            speed = min(base * MAX_SPEEDUP, speed * need / slot * 1.04)
             a = _trim(synth.speak(ln.text, job.tgt_lang, sid, speed))
             need = len(a) / SR
         shift = start - ln.start
@@ -197,8 +239,8 @@ def render(job: VoiceJob, synth, progress=None, mix: bool = True, video: bool = 
             ln.fit = f"too long +{over:.1f} s"
         elif shift > 0.25:
             ln.fit = f"shifted +{shift:.1f} s"
-        elif speed > job.speed * 1.03:
-            ln.fit = f"faster ×{speed / job.speed:.2f}"
+        elif speed > base * 1.03:
+            ln.fit = f"faster ×{speed / base:.2f}"
         else:
             ln.fit = "ok"
         i0 = int(start * SR)

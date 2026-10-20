@@ -16,9 +16,10 @@ from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComb
                                QTableWidgetItem, QToolButton, QVBoxLayout, QWidget)
 
 from .translate import CLAUDE_MODELS, LANG_NAMES
-from .tts import VOICES
+from .tts import voices_for as _voices_for
 
-TARGETS = ["hi", "bn", "ta", "te", "mr", "gu", "kn", "ml", "pa", "ur", "en", "es", "fr", "de", "it", "pt", "ar",
+TARGETS = ["hi", "en", "es", "fr", "de", "it", "pt", "ru", "ja", "zh", "he", "ar", "ko", "tr", "nl", "id",
+           "ta", "te", "mr", "gu", "kn", "ml", "pa", "ur", "bn",
            "ja", "zh", "id", "ru"]
 
 
@@ -141,18 +142,21 @@ class VoiceStudio(QWidget):
         r.clicked.connect(self.refresh_sources)
         row.addWidget(r)
         v.addLayout(row)
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Time", "Speaker", "Original", "Translation  (double-click to edit)", "Fit"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["Time", "Speaker", "Original", "Translation  (double-click to edit)",
+                                              "Meaning check", "Fit"])
         hh = self.table.horizontalHeader()
         hh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         hh.setSectionResizeMode(0, QHeaderView.Fixed)
         hh.setSectionResizeMode(1, QHeaderView.Fixed)
         hh.setSectionResizeMode(2, QHeaderView.Stretch)
         hh.setSectionResizeMode(3, QHeaderView.Stretch)
-        hh.setSectionResizeMode(4, QHeaderView.Fixed)
+        hh.setSectionResizeMode(4, QHeaderView.Stretch)
+        hh.setSectionResizeMode(5, QHeaderView.Fixed)
         self.table.setColumnWidth(0, 64)
         self.table.setColumnWidth(1, 120)
-        self.table.setColumnWidth(4, 120)
+        self.table.setColumnWidth(5, 120)
+        self.table.setColumnHidden(4, True)
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(True)
         self.table.setShowGrid(False)
@@ -196,23 +200,38 @@ class VoiceStudio(QWidget):
         g.setVerticalSpacing(10)
         self.lang = QComboBox()
         for code in TARGETS:
-            self.lang.addItem(LANG_NAMES[code] + ("" if code in VOICES else "  (subtitles only)"), code)
+            self.lang.addItem(LANG_NAMES[code] + ("" if _voices_for(code) else "  (subtitles only)"), code)
         self.lang.currentIndexChanged.connect(self.on_lang)
         g.addRow(_label("Into", "sub"), self.lang)
         self.engine = QComboBox()
-        self.engine.addItem("Offline — free & private", ("offline", ""))
+        self.engine.addItem("TranslateGemma 4B — offline, 55 languages", ("translategemma", "translategemma-4b"))
+        self.engine.addItem("TranslateGemma 12B — offline, best (16 GB RAM)", ("translategemma", "translategemma-12b"))
         for mid, name in CLAUDE_MODELS.items():
             self.engine.addItem(f"Claude — {name}", ("claude", mid))
+        self.engine.addItem("OPUS-MT — offline, basic (small download)", ("opus", ""))
+        self.engine.currentIndexChanged.connect(self.on_engine)
         self.engine.view().setMinimumWidth(360)
         for combo in (self.lang, self.engine):
             combo.setMinimumContentsLength(14)
             combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         g.addRow(_label("Engine", "sub"), self.engine)
+        self.style_box = QComboBox()
+        self.style_box.addItem("Natural spoken (recommended)", "natural")
+        self.style_box.addItem("Faithful — close to the original", "faithful")
+        self.style_box.addItem("Creative — ads & brand films", "creative")
+        self.style_box.setMinimumContentsLength(14)
+        self.style_box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.style_box.currentIndexChanged.connect(self.on_style)
+        g.addRow(_label("Style", "sub"), self.style_box)
         v.addLayout(g)
         self.engine_hint = _label("Offline uses open models downloaded once per language. Claude is best for names, "
                                   "idioms and corporate tone (needs your API key; text is sent to Anthropic).",
                                   "hint", wrap=True)
         v.addWidget(self.engine_hint)
+        self.polish = QCheckBox("Native-speaker polish (second pass)")
+        self.polish.setChecked(True)
+        self.polish.setToolTip("Claude re-reads every line as a native voice director and fixes anything stiff or literal.")
+        v.addWidget(self.polish)
         self.only_new = QCheckBox("Keep lines I edited (translate the rest)")
         self.only_new.setChecked(True)
         v.addWidget(self.only_new)
@@ -220,6 +239,16 @@ class VoiceStudio(QWidget):
         self.w.icons.set(self.translate_btn, "globe", "ink", 16)
         self.translate_btn.clicked.connect(self.do_translate)
         v.addWidget(self.translate_btn)
+        tools = QHBoxLayout()
+        self.check_btn = QPushButton("Check meaning")
+        self.check_btn.setToolTip("Translate every line back into the original language so you can verify the meaning.")
+        self.check_btn.clicked.connect(self.do_check)
+        tools.addWidget(self.check_btn)
+        self.short_btn = QPushButton("Shorten long lines")
+        self.short_btn.setToolTip("Claude rewrites lines flagged 'too long' so they fit their time slot.")
+        self.short_btn.clicked.connect(self.do_shorten)
+        tools.addWidget(self.short_btn)
+        v.addLayout(tools)
         hl = QFrame()
         hl.setObjectName("hline")
         v.addWidget(hl)
@@ -237,6 +266,15 @@ class VoiceStudio(QWidget):
         self.pace.addItems(["Relaxed (0.9×)", "Natural (1.0×)", "Brisk (1.1×)"])
         self.pace.setCurrentIndex(1)
         row.addWidget(self.pace)
+        row.addStretch()
+        v.addLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(_label("Quality", "sub"))
+        self.quality = QComboBox()
+        self.quality.addItem("Standard", "standard")
+        self.quality.addItem("Studio (slower)", "studio")
+        self.quality.setToolTip("Studio takes about twice as long and gives the richest, smoothest voice.")
+        row.addWidget(self.quality)
         row.addStretch()
         v.addLayout(row)
         self.mix = QCheckBox("Mix over the original sound (ducked)")
@@ -260,6 +298,7 @@ class VoiceStudio(QWidget):
         self.open_btn.clicked.connect(lambda: self.job and _open(self.job.path.parent))
         outer.addWidget(self.open_btn)
         self.on_lang()
+        self.on_engine()
         return c
 
     # ------------------------------------------------------------ sources
@@ -306,12 +345,12 @@ class VoiceStudio(QWidget):
 
     def on_lang(self, *_):
         code = self.lang.currentData()
-        ok = code in VOICES
+        ok = bool(_voices_for(code))
         self.gen_btn.setEnabled(ok)
-        self.voice_note.setText("Stock voices (Kokoro, offline). Pick a voice for each speaker; ▶ plays a sample."
-                                if ok else f"No local voice for {LANG_NAMES.get(code, code)} yet — you still get the "
-                                "translation and subtitles. Voices: English, Hindi, Spanish, French, Italian, "
-                                "Portuguese, Japanese, Chinese.")
+        n = len(_voices_for(code))
+        self.voice_note.setText(f"{n} natural voices for {LANG_NAMES.get(code, code)} (offline). Pick one per speaker; "
+                                "▶ plays a sample." if ok else f"No local voice for {LANG_NAMES.get(code, code)} yet — "
+                                "you still get the translation and subtitles.")
         if not self.loading:
             self.load_job()
 
@@ -327,12 +366,14 @@ class VoiceStudio(QWidget):
             self.job = new_job(js, self.lang.currentData())
         except Exception as exc:
             self.status.setText(f"Could not open this transcript: {exc}")
-        if self.job and self.job.engine and self.job.engine != "offline":
-            k = self.engine.findData(("claude", self.job.model))
+        if self.job and self.job.engine:
+            k = self.engine.findData((self.job.engine, self.job.model))
             if k >= 0:
                 self.engine.setCurrentIndex(k)
         if self.job:
             self.pace.setCurrentIndex({0.9: 0, 1.0: 1, 1.1: 2}.get(round(self.job.speed, 1), 1))
+            self.style_box.setCurrentIndex(max(0, self.style_box.findData(self.job.style)))
+            self.quality.setCurrentIndex(max(0, self.quality.findData(self.job.quality)))
         self.fill()
 
     # ------------------------------------------------------------ table
@@ -343,7 +384,7 @@ class VoiceStudio(QWidget):
         warn = QColor("#C2410C") if _T()["name"] == "light" else QColor("#FDBA74")
         okc = QColor("#15803D") if _T()["name"] == "light" else QColor("#86EFAC")
         for i, ln in enumerate(lines):
-            for col, val in enumerate([mmss(ln.start), ln.speaker, ln.source, ln.text, ln.fit]):
+            for col, val in enumerate([mmss(ln.start), ln.speaker, ln.source, ln.text, ln.check, ln.fit]):
                 it = QTableWidgetItem(val)
                 if col != 3:
                     it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
@@ -354,7 +395,7 @@ class VoiceStudio(QWidget):
                     f = it.font()
                     f.setItalic(True)
                     it.setFont(f)
-                if col == 4 and val:
+                if col == 5 and val:
                     it.setForeground(warn if val.startswith(("too long", "shifted", "no ")) else okc)
                     if val.startswith("too long"):
                         it.setToolTip("Shorten this translation, or choose a brisker pace")
@@ -387,7 +428,9 @@ class VoiceStudio(QWidget):
             f = it.font()
             f.setItalic(True)
             it.setFont(f)
+            self.table.item(it.row(), 5).setText("")
             self.table.item(it.row(), 4).setText("")
+            ln.check = ""
             self.loading = False
             self.table.resizeRowToContents(it.row())
 
@@ -419,9 +462,13 @@ class VoiceStudio(QWidget):
             box = QComboBox()
             box.setMinimumContentsLength(10)
             box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-            for sid, lab in options:
-                box.addItem(lab, sid)
-            want = self.job.voices.get(spk, options[k % len(options)][0])
+            from .tts import default_voices
+
+            for vv in options:
+                box.addItem(vv.label + ("" if vv.engine == "st" else "  · Kokoro"), vv.id)
+            want = self.job.voices.get(spk) or default_voices(self.job.tgt_lang, len(self.job.speakers()))[k]
+            if isinstance(want, int):
+                want = f"ko:{want}"
             idx = box.findData(want)
             box.setCurrentIndex(idx if idx >= 0 else 0)
             box.currentIndexChanged.connect(lambda _i, s=spk, b=box: self.set_voice(s, b.currentData()))
@@ -437,18 +484,19 @@ class VoiceStudio(QWidget):
 
     def set_voice(self, spk, sid, save=True):
         if self.job:
-            self.job.voices[spk] = int(sid)
+            self.job.voices[spk] = str(sid)
             if save:
                 self.job.save()
 
     def preview(self, sid, spk):
         from .gui_editor import AudioPlayer
-        from .tts import Synth, is_installed
+        from .tts import VOICES, Synth, is_installed
 
         if not self.job:
             return
-        if not is_installed():
-            QMessageBox.information(self, "Voice model", "The voice model (330 MB) downloads the first time you "
+        v = VOICES.get(str(sid))
+        if v and not is_installed(v.engine):
+            QMessageBox.information(self, "Voices", "The voices download (about 140–330 MB, once) the first time you "
                                     "generate a voiceover. Click Generate voiceover once, then previews work.")
             return
         text = next((ln.text for ln in self.job.lines if ln.speaker == spk and ln.text.strip()), "") or \
@@ -459,7 +507,7 @@ class VoiceStudio(QWidget):
 
             from .dub import _write_wav
 
-            a = Synth().speak(text[:220], self.job.tgt_lang, int(sid), 1.0)
+            a = Synth(quality=self.quality.currentData()).speak(text[:220], self.job.tgt_lang, str(sid), 1.0)
             tmp = Path(tempfile.gettempdir()) / "verbatim_voice_preview.wav"
             _write_wav(tmp, a if len(a) else np.zeros(1000, dtype=np.float32))
             if self.preview_player is None:
@@ -473,7 +521,9 @@ class VoiceStudio(QWidget):
     # ------------------------------------------------------------ actions
     def busy(self, on: bool, text: str = ""):
         self.translate_btn.setEnabled(not on)
-        self.gen_btn.setEnabled(not on and self.lang.currentData() in VOICES)
+        self.gen_btn.setEnabled(not on and bool(_voices_for(self.lang.currentData())))
+        self.check_btn.setEnabled(not on)
+        self.short_btn.setEnabled(not on)
         self.source.setEnabled(not on)
         self.lang.setEnabled(not on)
         self.bar.setVisible(on)
@@ -502,15 +552,12 @@ class VoiceStudio(QWidget):
             QMessageBox.information(self, "Choose a transcript", "Choose a transcribed file first.")
             return
         kind, model = self.engine.currentData()
-        if kind == "claude":
-            from .translate import get_claude_key
-
-            if not get_claude_key():
-                QMessageBox.information(self, "Claude API key needed",
-                                        "Add your Claude API key in Settings › Cloud engines, or use the Offline engine.")
-                return
+        if kind == "claude" and self._need_key():
+            return
         job, vocab = self.job, self.w.vocab.toPlainText()
         keep = self.only_new.isChecked()
+        polish = self.polish.isChecked()
+        job.style = self.style_box.currentData()
         if not keep:
             for ln in job.lines:
                 ln.edited = False
@@ -519,9 +566,89 @@ class VoiceStudio(QWidget):
             from .dub import translate_job
             from .translate import build
 
-            return translate_job(job, build(kind, model or "claude-sonnet-5-5", progress), vocab, progress)
+            return translate_job(job, build(kind, model or "claude-sonnet-5-5", progress), vocab, progress,
+                                 polish=polish and kind == "claude")
 
         self.run(work, self.on_translated, "Translating…")
+
+    def on_engine(self, *_):
+        kind, _m = self.engine.currentData()
+        self.polish.setVisible(kind == "claude")
+        self.short_btn.setToolTip("Claude rewrites lines flagged 'too long' so they fit their time slot "
+                                  "(needs your Claude key, whichever engine translated).")
+        hints = {"translategemma": "Google TranslateGemma runs on this computer — private and free. First use downloads "
+                                   "the engine and model once (2.5 GB for 4B, 7.3 GB for 12B).",
+                 "claude": "Best for names, idioms and brand tone; with polish, a native-speaker pass fixes anything "
+                           "stiff. Needs your Claude API key; text is sent to Anthropic.",
+                 "opus": "Small, fast, basic quality — use only when the others are not available."}
+        self.engine_hint.setText(hints.get(kind, ""))
+
+    def on_style(self, *_):
+        if self.job:
+            self.job.style = self.style_box.currentData()
+
+    def _need_key(self) -> bool:
+        from .translate import get_claude_key
+
+        if get_claude_key():
+            return False
+        QMessageBox.information(self, "Claude API key needed", "Add your Claude API key in Settings › Cloud engines.")
+        return True
+
+    def do_check(self):
+        if not self.job or not any(ln.text.strip() for ln in self.job.lines):
+            QMessageBox.information(self, "Translate first", "Translate the lines first.")
+            return
+        kind, model = self.engine.currentData()
+        if kind == "opus":
+            kind, model = "translategemma", "translategemma-4b"
+        if kind == "claude" and self._need_key():
+            return
+        job = self.job
+
+        def work(progress):
+            from .dub import check_meaning
+            from .translate import build
+
+            return check_meaning(job, build(kind, model or "claude-sonnet-5-5", progress), progress)
+
+        self.run(work, self.on_checked, "Checking meaning…")
+
+    def on_checked(self, job, err):
+        self.busy(False)
+        if err:
+            QMessageBox.warning(self, "Meaning check failed", err)
+            return
+        self.table.setColumnHidden(4, False)
+        self.fill()
+        self.status.setText("Meaning check ready — compare the Original and Meaning check columns.")
+
+    def do_shorten(self):
+        if not self.job or not any(ln.fit.startswith("too long") for ln in self.job.lines):
+            QMessageBox.information(self, "Nothing to shorten", "No lines are flagged too long. Generate the "
+                                    "voiceover first; lines that do not fit are flagged.")
+            return
+        if self._need_key():
+            return
+        kind, model = self.engine.currentData()
+        job, vocab = self.job, self.w.vocab.toPlainText()
+
+        def work(progress):
+            from .dub import shorten_long_lines
+            from .translate import ClaudeTranslator
+
+            return shorten_long_lines(job, ClaudeTranslator(model=model if kind == "claude" else "claude-sonnet-5-5"),
+                                      vocab)
+
+        self.run(work, self.on_shortened, "Shortening long lines…")
+
+    def on_shortened(self, n, err):
+        self.busy(False)
+        if err:
+            QMessageBox.warning(self, "Could not shorten", err)
+            return
+        self.fill()
+        self.status.setText(f"{n} line(s) shortened (marked as edited). Generate the voiceover again.")
 
     def on_translated(self, job, err):
         self.busy(False)
@@ -545,13 +672,14 @@ class VoiceStudio(QWidget):
                                             "will be silent. Continue?") != QMessageBox.Yes:
             return
         self.job.speed = (0.9, 1.0, 1.1)[self.pace.currentIndex()]
+        self.job.quality = self.quality.currentData()
         job, mix, video = self.job, self.mix.isChecked(), self.video.isChecked()
 
         def work(progress):
             from .dub import render
             from .tts import Synth
 
-            return render(job, Synth(progress=progress), progress, mix=mix, video=video)
+            return render(job, Synth(progress=progress, quality=job.quality), progress, mix=mix, video=video)
 
         self.run(work, self.on_rendered, "Preparing voices…")
 

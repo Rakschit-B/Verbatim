@@ -1,4 +1,4 @@
-# VERBATIM 3.2 — by Infinite Story
+# VERBATIM 3.3 — by Infinite Story
 
 **Every word. Every moment.** VERBATIM 3.0 introduces the new interface and three modules:
 
@@ -20,6 +20,9 @@ languages. Details and measurements: [docs/PHASE2.md](docs/PHASE2.md).
 **New in 3.2 (Phase 3 — Voice Studio part 1):** translation (offline or Claude API), Hindi/English and
 6 more languages of local voiceover with automatic timing fit, dubbed MP4 + translated subtitles,
 and the voice consent register. Details: [docs/PHASE3.md](docs/PHASE3.md).
+
+**New in 3.3:** Supertonic 3 voices (10 natural voices × 31 languages), offline TranslateGemma translation
+(55 languages), Claude translation with styles + native-speaker polish, meaning check and auto-shortening.
 
 Accurate, private, batch transcription of videos and audio for Mac (Apple Silicon) and Windows, with a
 full audit trail: every file, every word, every correction and every doubt is logged in one
