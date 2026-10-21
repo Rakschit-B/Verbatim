@@ -13,6 +13,7 @@ import getpass
 import math
 import sqlite3
 import subprocess
+import os
 import sys
 import threading
 from dataclasses import dataclass, field
@@ -36,7 +37,7 @@ from .engines import ENGINE_CHOICES
 from .platform_info import IS_WINDOWS, asset, ffmpeg_path, resource_root, user_data_dir
 from .settings import FORMATS, LANGUAGES, Settings
 
-T: dict = th.LIGHT  # current theme tokens
+T: dict = th.tokens(th.LIGHT, 0)  # current theme tokens (tinted for the active module)
 CODE_TO_LANG = {v: k for k, v in LANGUAGES.items() if v}
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".mpg", ".mpeg", ".wmv", ".flv", ".mts", ".m2ts", ".3gp"}
 ENH_VALUES = ["normalize", "off", "clean", "restore"]
@@ -211,75 +212,60 @@ class DropZone(QFrame):
         self.update()
         self.dropped.emit([u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()])
 
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        roomy = self.height() >= 360          # small windows: keep the title and Add Files, drop the extras
+        for w in getattr(self, "extras", []):
+            w.setVisible(roomy)
+
     def paintEvent(self, _):
+        from .gui_score import crop_marks, envelope
+
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        clip = QPainterPath()
-        clip.addRoundedRect(r, 20, 20)
-        p.setClipPath(clip)
-        g = QLinearGradient(r.topLeft(), r.bottomRight())
-        g.setColorAt(0, QColor(T["drop_a"]))
-        g.setColorAt(1, QColor(T["drop_b"]))
-        p.fillRect(r, g)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(T["soft"] if self.hover else T["card"]))
+        p.drawRoundedRect(r, 6, 6)
+        # the signature: a speech envelope drawn as a hairline bar graph, played up to the golden section
         w, h = r.width(), r.height()
-        k = T["wave"]
-        bands = [  # (baseline, amplitude, frequency, phase, colours)
-            (0.62, 0.10, 1.1, 0.4, [(0, "#7F9BFF", 70), (0.5, "#C9A7FF", 60), (1, "#FFC2D9", 70)]),
-            (0.72, 0.08, 0.9, 2.1, [(0, "#A7C1FF", 80), (0.6, "#E3B8F5", 70), (1, "#FFD6C2", 90)]),
-            (0.82, 0.06, 1.3, 4.0, [(0, "#C4D3FF", 90), (0.5, "#F2C6EA", 80), (1, "#FFE1CC", 100)]),
-        ]
-        for base, amp, freq, phase, stops in bands:
-            path = QPainterPath()
-            path.moveTo(r.left(), r.bottom())
-            for i in range(0, 61):
-                x = r.left() + w * i / 60
-                y = r.top() + h * (base + amp * math.sin(2 * math.pi * freq * i / 60 + phase))
-                path.lineTo(x, y)
-            path.lineTo(r.right(), r.bottom())
-            path.closeSubpath()
-            lg = QLinearGradient(r.left(), 0, r.right(), 0)
-            for pos, col, a in stops:
-                c = QColor(col)
-                c.setAlpha(int(a * k))
-                lg.setColorAt(pos, c)
-            p.fillPath(path, lg)
-        pen = QPen(QColor(255, 255, 255, 150 if T['name'] == 'light' else 34), 1.2)
-        p.setPen(pen)
-        for j in range(7):  # silk lines
-            path = QPainterPath()
-            for i in range(0, 61):
-                x = r.left() + w * i / 60
-                y = r.top() + h * (0.55 + 0.012 * j + 0.13 * math.sin(2 * math.pi * 0.8 * i / 60 + 1.2 + 0.18 * j))
-                path.moveTo(x, y) if i == 0 else path.lineTo(x, y)
-            p.drawPath(path)
-        p.setClipping(False)
+        n = max(40, int(w / 6))
+        env = envelope(n, seed=11)
+        mid = r.bottom() - 36
+        amp = min(20.0, h * 0.07)
+        head = int(n * 0.618)
+        acc, rest = QColor(T["accent"]), QColor(T["border"])
+        for i, e in enumerate(env):
+            x = r.left() + 18 + (w - 36) * i / (n - 1)
+            p.setPen(QPen(acc if i <= head else rest, 2.0, Qt.SolidLine, Qt.FlatCap))
+            p.drawLine(QPointF(x, mid - amp * e), QPointF(x, mid + amp * e))
+        xh = r.left() + 18 + (w - 36) * head / (n - 1)
+        p.setPen(QPen(QColor(T["ink"]), 1))
+        p.drawLine(QPointF(xh + 3, mid - amp * 1.25), QPointF(xh + 3, mid + amp * 1.25))
+        crop_marks(p, r, QColor(T["muted"]))
         p.setBrush(Qt.NoBrush)
         if self.hover:
-            p.setPen(QPen(QColor(T["accent"]), 2, Qt.DashLine))
+            p.setPen(QPen(QColor(T["accent"]), 1.5, Qt.DashLine))
         else:
-            p.setPen(QPen(QColor(255, 255, 255, 200) if T["name"] == "light" else QColor(T["border"]), 1.5))
-        p.drawRoundedRect(r, 20, 20)
+            p.setPen(QPen(QColor(T["border"]), 1))
+        p.drawRoundedRect(r, 6, 6)
 
 
 class UploadBadge(QLabel):
     def __init__(self):
         super().__init__()
-        self.setFixedSize(96, 96)
+        self.setFixedSize(64, 64)
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(T["ink"]), 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QRectF(1, 1, 62, 62))
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, 110 if T["name"] == "light" else 30))
-        p.drawEllipse(QRectF(0, 0, 96, 96))
-        g = QLinearGradient(QPointF(12, 12), QPointF(84, 84))
-        g.setColorAt(0, QColor("#F6F4FF" if T["name"] == "light" else "#2C2A55"))
-        g.setColorAt(1, QColor("#E2DCFF" if T["name"] == "light" else "#3A2B5C"))
-        p.setBrush(g)
-        p.setPen(QPen(QColor(255, 255, 255, 220) if T["name"] == "light" else QColor(T["border"]), 1.2))
-        p.drawEllipse(QRectF(12, 12, 72, 72))
-        p.drawPixmap(33, 33, th.pixmap("upload", T["ink"], 30))
+        p.setBrush(QColor(T["accent"]))
+        p.drawEllipse(QRectF(46, 4, 10, 10))
+        p.drawPixmap(19, 19, th.pixmap("upload", T["ink"], 26, weight="light"))
 
 
 class Thumb(QLabel):
@@ -301,17 +287,14 @@ class Thumb(QLabel):
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         r = QRectF(0, 0, 76, 44)
         path = QPainterPath()
-        path.addRoundedRect(r, 7, 7)
+        path.addRoundedRect(r, 3, 3)
         p.setClipPath(path)
         if self.img:
             s = self.img.scaled(152, 88, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
             s.setDevicePixelRatio(2)
             p.drawPixmap(int((76 - s.width() / 2) / 2), int((44 - s.height() / 2) / 2), s)
         else:
-            g = QLinearGradient(r.topLeft(), r.bottomRight())
-            g.setColorAt(0, QColor("#DCE4FF" if T["name"] == "light" else "#2A3160"))
-            g.setColorAt(1, QColor("#F5DDF2" if T["name"] == "light" else "#45285A"))
-            p.fillRect(r, g)
+            p.fillRect(r, QColor(T["seg"]))
             p.drawPixmap(26, 10, th.pixmap("film" if self.video else "wave", T["sub"], 24))
 
 
@@ -501,6 +484,7 @@ class Window(QMainWindow):
     NAV = [("Transcribe", "home"), ("Files", "file"), ("Projects", "projects"), ("Speakers", "users"),
            ("Vocabulary", "vocab"), ("Output", "output"), ("Activity Log", "clock"), ("Settings", "gear")]
     TABS = ["Settings", "Speakers", "Vocabulary", "Output"]
+    CHAPTER = {"Transcribe": "Queue", "Files": "Library"}
 
     def __init__(self):
         super().__init__()
@@ -520,16 +504,21 @@ class Window(QMainWindow):
         root = QWidget()
         root.setObjectName("root")
         self.setCentralWidget(root)
-        outer = QVBoxLayout(root)
-        outer.setContentsMargins(26, 18, 26, 18)
-        outer.setSpacing(14)
-        outer.addLayout(self._header())
+        frame = QHBoxLayout(root)
+        frame.setContentsMargins(0, 0, 0, 0)
+        frame.setSpacing(0)
+        frame.addWidget(self._rail())
+        content = QWidget()
+        outer = QVBoxLayout(content)
+        outer.setContentsMargins(30, 16, 26, 18)
+        outer.setSpacing(12)
+        frame.addWidget(content, 1)
+        outer.addWidget(self._masthead())
         self.banner = self._banner()
         outer.addWidget(self.banner)
 
         body = QHBoxLayout()
         body.setSpacing(16)
-        body.addWidget(self._nav())
         self.right = self._right_panel()  # built first: pages mirror some of its controls
         self.pages = QStackedWidget()
         self.pages.addWidget(self._transcribe_page())   # 0
@@ -548,6 +537,11 @@ class Window(QMainWindow):
         self.music = MusicStudio(self)                   # 7 — module 03
         self.music.log.connect(self.say)
         self.pages.addWidget(self.music)
+        from .gui_video import VideoStudio
+
+        self.video = VideoStudio(self)                   # 8 — module 04
+        self.video.log.connect(self.say)
+        self.pages.addWidget(self.video)
         body.addWidget(self.pages, 1)
         body.addWidget(self.right)
         outer.addLayout(body, 1)
@@ -563,13 +557,16 @@ class Window(QMainWindow):
     # ------------------------------------------------------------------ theme
     def theme_tokens(self) -> dict:
         mode = self.s.theme
+        base = th.LIGHT
         if mode == "system":
             try:
-                dark = QApplication.styleHints().colorScheme() == Qt.ColorScheme.Dark
+                if QApplication.styleHints().colorScheme() == Qt.ColorScheme.Dark:
+                    base = th.DARK
             except Exception:
-                dark = False
-            return th.DARK if dark else th.LIGHT
-        return th.DARK if mode == "dark" else th.LIGHT
+                pass
+        elif mode == "dark":
+            base = th.DARK
+        return th.tokens(base, getattr(self, "module", 0))
 
     def apply_theme(self, first: bool = False):
         global T
@@ -579,124 +576,102 @@ class Window(QMainWindow):
         if first:
             return
         ICONS.refresh()
-        self.set_logo()
         for r in self.rows:
             self.paint_row(r)
-        self.update()
+        if hasattr(self, "rail"):
+            self.rail.theme_btn.glyph = "sun" if T["name"] == "dark" else "moon"
         for w in self.findChildren(QWidget):
-            w.update()
+            QWidget.update(w)          # (item views overload update(index) in some Qt for Python versions)
 
-    def set_logo(self):
-        name = "verbatim_by_story_dark.png" if T["name"] == "dark" else "verbatim_by_story.png"
-        p = asset(name)
-        if p.exists():
-            px = QPixmap(str(p))
-            dpr = 2.0
-            px = px.scaledToHeight(int(50 * dpr), Qt.SmoothTransformation)
-            px.setDevicePixelRatio(dpr)
-            self.logo.setPixmap(px)
-        else:
-            self.logo.setText("VERBATIM")
+    def toggle_theme(self):
+        self.s.theme = "light" if T["name"] == "dark" else "dark"
+        self.s.save()
+        if hasattr(self, "theme_box"):
+            self.theme_box.blockSignals(True)
+            self.theme_box.setCurrentIndex(("light", "dark", "system").index(self.s.theme))
+            self.theme_box.blockSignals(False)
+        self.apply_theme()
 
-    # ------------------------------------------------------------------ header
-    def _header(self):
-        h = QHBoxLayout()
-        h.setSpacing(18)
-        brand = QVBoxLayout()
-        brand.setSpacing(4)
-        self.logo = QLabel()
-        self.set_logo()
-        brand.addWidget(self.logo)
-        tag = label("EVERY WORD.  EVERY MOMENT.", "tagline")
-        tag.setContentsMargins(70, 0, 0, 0)
-        brand.addWidget(tag)
-        h.addLayout(brand)
-        h.addSpacing(24)
-        h.addLayout(self._modules())
-        h.addStretch()
-        self.subtitle = label("Accurate batch transcription with a full audit trail.", "sub")
-        h.addWidget(self.subtitle)
-        upd = QPushButton("  Check for updates")
-        self.upd_btn = upd
-        upd.setToolTip("VERBATIM checks GitHub for new versions. Nothing installs without your OK.")
-        upd.setObjectName("pillBtn")
-        upd.setCursor(Qt.PointingHandCursor)
-        ICONS.set(upd, "download", "ink", 16)
-        upd.clicked.connect(self.header_update_clicked)
-        h.addWidget(upd)
-        user = (getpass.getuser() or "V").strip()
-        av = label(user[:1].upper(), "avatar")
-        av.setFixedSize(44, 44)
-        av.setAlignment(Qt.AlignCenter)
-        av.setToolTip(f"{user} — VERBATIM {__version__} · © 2026 Infinite Story LLP")
-        h.addWidget(av)
-        return h
+    # ------------------------------------------------------------------ rail + masthead
+    def _rail(self):
+        from .gui_score import Rail
 
-    def _modules(self):
-        row = QHBoxLayout()
-        row.setSpacing(6)
-        mods = [("01", "TRANSCRIBE", True), ("02", "VOICE STUDIO", True), ("03", "MUSIC STUDIO", True),
-                ("04", "VIDEO LOCALISE", False)]
-        self.mod_widgets = []
-        for k, (num, name, live) in enumerate(mods):
-            f = ModulePill(lambda k=k: self.select_module(k)) if live else QFrame()
-            f.setObjectName("module")
-            lay = QHBoxLayout(f)
-            lay.setContentsMargins(12, 8, 12, 8)
-            lay.setSpacing(8)
-            n = label(num, "modNum")
-            nm = label(name, "modName")
-            lay.addWidget(n)
-            lay.addWidget(nm)
-            if not live:
-                lay.addWidget(label("Coming soon", "pill"))
-                f.setToolTip(f"{name.title()} — coming soon")
-            else:
-                f.setCursor(Qt.PointingHandCursor)
-            self.mod_widgets.append((f, n, nm))
-            row.addWidget(f)
         self.module = 0
-        self.paint_modules()
-        return row
+        self.rail = Rail(__version__)
+        self.rail.module_clicked.connect(self.select_module)
+        self.rail.log_btn.clicked.connect(lambda: self.select_nav(6))
+        self.rail.settings_btn.clicked.connect(lambda: self.select_nav(7))
+        self.rail.theme_btn.clicked.connect(self.toggle_theme)
+        self.rail.theme_btn.glyph = "sun" if T["name"] == "dark" else "moon"
+        self.rail.update_btn.clicked.connect(self.header_update_clicked)
+        user = (getpass.getuser() or "V").strip()
+        self.rail.avatar.setText(user[:1].upper())
+        self.rail.avatar.setToolTip(f"{user} — VERBATIM {__version__} · © 2026 Infinite Story LLP")
+        return self.rail
 
-    def paint_modules(self):
-        for k, (f, n, nm) in enumerate(self.mod_widgets):
-            on = k == self.module
-            f.setObjectName("moduleOn" if on else "module")
-            n.setObjectName("modNumOn" if on else "modNum")
-            nm.setObjectName("modNameOn" if on else "modName")
-            for w in (f, n, nm):
-                w.style().unpolish(w)
-                w.style().polish(w)
+    def _masthead(self):
+        from .gui_score import Masthead
+
+        self.mast = Masthead()
+        self.nav_group = QButtonGroup(self)
+        self.nav_group.setExclusive(True)
+        for i, (name, _ic) in enumerate(self.NAV):
+            b = QPushButton(self.CHAPTER.get(name, name))
+            b.setObjectName("chapter")
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            self.nav_group.addButton(b, i)
+            self.mast.chapters.addWidget(b)
+            if name in ("Activity Log", "Settings"):
+                b.setVisible(False)
+        self.nav_group.idClicked.connect(self.select_nav)
+        self.mast.status.setText(f"VERBATIM {__version__}  ·  OFFLINE-FIRST  ·  INFINITE STORY LLP")
+        return self.mast
+
+    def set_masthead(self, util: str = ""):
+        k = self.module
+        m = th.MODULES[k]
+        if util == "settings":
+            self.mast.set("SETTINGS  ·  THIS COMPUTER", "Settings", "how VERBATIM works for you.", False)
+        elif util == "log":
+            self.mast.set("ACTIVITY  ·  EVERYTHING VERBATIM DID", "Activity", "the full audit trail.", False)
+        else:
+            self.mast.set(f"MODULE {m['num']} / 0{len(th.MODULES)}  ·  {m['name'].upper()}", m["name"],
+                          m["tag"].lower().rstrip(".") + ".", k == 0)
+        self.rail.set_module(None if util else k, util)
+
+    def _set_module_colour(self, k: int):
+        if k != self.module:
+            self.module = k
+            self.apply_theme()
 
     def select_module(self, k: int):
         if k == 0:
+            self._set_module_colour(0)
             self.select_nav(0)
             return
-        self.module = k
-        self.paint_modules()
+        self._set_module_colour(k)
         self.nav_group.setExclusive(False)
         for b in self.nav_group.buttons():
             b.setChecked(False)
         self.nav_group.setExclusive(True)
         self.right.setVisible(False)
+        self.set_masthead()
         if k == 1:
             self.voice.refresh_sources()
             self.pages.setCurrentIndex(6)
-        else:
+        elif k == 2:
             self.music.refresh_library()
             self.music.fill_engines()
             self.pages.setCurrentIndex(7)
+        else:
+            self.video.refresh()
+            self.pages.setCurrentIndex(8)
 
     def send_to_voice(self, json_path: str):
         if json_path:
             self.select_module(1)
             self.voice.select_source(json_path)
-
-    def resizeEvent(self, e):
-        super().resizeEvent(e)
-        if hasattr(self, "subtitle"):
-            self.subtitle.setVisible(self.width() >= 2000)
 
     def _banner(self):
         f = QFrame()
@@ -716,69 +691,14 @@ class Window(QMainWindow):
         f.setVisible(False)
         return f
 
-    # ------------------------------------------------------------------ navigation
-    def _nav(self):
-        w = QWidget()
-        w.setFixedWidth(206)
-        v = QVBoxLayout(w)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(6)
-        self.nav_group = QButtonGroup(self)
-        self.nav_group.setExclusive(True)
-        for i, (name, ic) in enumerate(self.NAV):
-            b = QPushButton("   " + name)
-            b.setObjectName("nav")
-            b.setCheckable(True)
-            b.setCursor(Qt.PointingHandCursor)
-            ICONS.set(b, ic, "ink", 20)
-            b.toggled.connect(lambda on, b=b, ic=ic: ICONS._apply(b, ic, "nav_ink" if on else "ink", 20))
-            self.nav_group.addButton(b, i)
-            v.addWidget(b)
-        self.nav_group.idClicked.connect(self.select_nav)
-        v.addStretch()
-        v.addWidget(self._soon_card())
-        return w
-
-    def _soon_card(self):
-        f = QFrame()
-        f.setObjectName("soon")
-        v = QVBoxLayout(f)
-        v.setContentsMargins(18, 18, 18, 18)
-        v.setSpacing(6)
-        g = QLabel()
-        g.setFixedSize(64, 46)
-        g.setPixmap(self._globe_badge())
-        v.addWidget(g)
-        v.addWidget(label("COMING SOON", "soonTag"))
-        v.addWidget(label("Translate & Dub\nwith Lip Sync", "soonTitle"))
-        return f
-
-    def _globe_badge(self) -> QPixmap:
-        px = QPixmap(128, 92)
-        px.fill(Qt.transparent)
-        p = QPainter(px)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setPen(Qt.NoPen)
-        g = QLinearGradient(0, 0, 128, 92)
-        g.setColorAt(0, QColor("#8FB0FF"))
-        g.setColorAt(1, QColor("#C79BFF"))
-        p.setBrush(QColor("#E6A6F2"))
-        p.drawEllipse(QRectF(70, 4, 40, 40))
-        p.setBrush(g)
-        p.drawEllipse(QRectF(10, 14, 72, 72))
-        p.drawPixmap(22, 26, th.pixmap("globe", "#FFFFFF", 48, 1.0, 1.6))
-        p.end()
-        px.setDevicePixelRatio(2)
-        return px
-
     def select_nav(self, i: int):
         name = self.NAV[i][0]
-        if getattr(self, "module", 0) != 0:
-            self.module = 0
-            self.paint_modules()
-        if hasattr(self, "right"):
-            self.right.setVisible(True)
+        util = {"Activity Log": "log", "Settings": "settings"}.get(name, "")
+        if self.module != 0:
+            self._set_module_colour(0)
+        self.right.setVisible(not util and name != "Files" and name != "Projects")
         self.nav_group.button(i).setChecked(True)
+        self.set_masthead(util)
         page = {"Transcribe": 0, "Files": 1, "Projects": 2, "Speakers": 5, "Vocabulary": 0, "Output": 0,
                 "Activity Log": 3, "Settings": 4}[name]
         if page == 1:
@@ -787,6 +707,7 @@ class Window(QMainWindow):
             self.load_projects()
         elif page == 5:
             self.load_speakers()
+            self.right.setVisible(True)
         self.pages.setCurrentIndex(page)
         if name in ("Speakers", "Vocabulary", "Output"):
             self.select_tab(self.TABS.index(name), from_nav=True)
@@ -802,7 +723,7 @@ class Window(QMainWindow):
         self.drop = DropZone()
         self.drop.dropped.connect(self.add_paths)
         dz = QVBoxLayout(self.drop)
-        dz.setContentsMargins(20, 22, 20, 22)
+        dz.setContentsMargins(20, 18, 20, 74)
         dz.setSpacing(8)
         dz.addStretch(1)
         badge = UploadBadge()
@@ -847,6 +768,7 @@ class Window(QMainWindow):
         fold.clicked.connect(self.pick_folder)
         dz.addWidget(fold, 0, Qt.AlignHCenter)
         dz.addStretch(1)
+        self.drop.extras = [badge, o, fold]
         v.addWidget(self.drop, 5)
         v.addWidget(self._files_card(), 6)
         return w
@@ -1221,10 +1143,10 @@ class Window(QMainWindow):
             sc.setWidget(inner)
             self.tabs.addWidget(sc)
         v.addWidget(self.tabs, 1)
-        self.start = QPushButton("   Start Transcription")
+        self.start = QPushButton("   Start transcription")
         self.start.setObjectName("start")
         self.start.setCursor(Qt.PointingHandCursor)
-        ICONS.set(self.start, "sparkle", "#FFFFFF", 22)
+        ICONS.set(self.start, "record", "accent_ink", 20)
         self.start.clicked.connect(self.start_batch)
         v.addWidget(self.start)
         self.stop = QPushButton("   Stop after current file")
@@ -1340,7 +1262,7 @@ class Window(QMainWindow):
         self.fname.setChecked(self.s.filename_context)
         self.translate = QCheckBox("Also create an English translation (non-English videos)")
         self.translate.setChecked(self.s.translate_english)
-        self.precise = QCheckBox("Precise word timing for subtitles & dubbing (Whisper languages, slower)")
+        self.precise = QCheckBox("Precise word timing for subtitles && dubbing (Whisper languages, slower)")
         self.precise.setChecked(self.s.precise_timing)
         self.precise.setToolTip("Re-times every word with a separate acoustic model (1,600+ languages incl. Hindi).\n"
                                 "English with Parakeet is already precise. Downloads a 330 MB model once.")
@@ -1933,6 +1855,58 @@ class Window(QMainWindow):
                            "voices stay the default and never leave this computer.", "hint", wrap=True))
         iv.addWidget(hline())
 
+        iv.addWidget(label("Cloud GPU (optional)", "h3"))
+        iv.addWidget(label("Run music, singing conversion, lip-sync and quality scoring on a GPU server you control "
+                           "(set it up with cloud/README.md in the VERBATIM repository). Transcription, editing and "
+                           "the Master Log stay on this computer. Off = everything runs here.", "hint", wrap=True))
+        from .cloud import ENGINES, CloudConfig
+
+        cc = CloudConfig.load()
+        self.cloud_on = Toggle("Use my Cloud GPU")
+        self.cloud_on.setChecked(cc.enabled)
+        iv.addWidget(self.cloud_on)
+        form = QGridLayout()
+        form.setHorizontalSpacing(12)
+        form.addWidget(label("Server address", "sub"), 0, 0)
+        self.cloud_url = QLineEdit(cc.url)
+        self.cloud_url.setPlaceholderText("https://gpu.yourdomain.com  or  http://127.0.0.1:8765 (SSH tunnel)")
+        form.addWidget(self.cloud_url, 0, 1)
+        form.addWidget(label("Access token", "sub"), 1, 0)
+        self.cloud_token = QLineEdit()
+        self.cloud_token.setEchoMode(QLineEdit.Password)
+        self.cloud_token.setPlaceholderText("stored in your system keychain" if cc.url else "the token you set on the server")
+        form.addWidget(self.cloud_token, 1, 1)
+        iv.addLayout(form)
+        row = QHBoxLayout()
+        self.cloud_engines = {}
+        for key, text in (("music", "Music"), ("voice", "Voice tone && singing"), ("lipsync", "Lip-sync")):
+            cb = QCheckBox(text)
+            cb.setChecked(key in cc.engines)
+            self.cloud_engines[key] = cb
+            row.addWidget(cb)
+        row.addStretch()
+        iv.addLayout(row)
+        row = QHBoxLayout()
+        b = QPushButton("Save")
+        b.clicked.connect(self.save_cloud)
+        row.addWidget(b)
+        b = QPushButton("Test connection")
+        b.clicked.connect(self.test_cloud)
+        row.addWidget(b)
+        self.cloud_status = label("", "hint", wrap=True)
+        row.addWidget(self.cloud_status, 1)
+        iv.addLayout(row)
+        iv.addWidget(hline())
+
+        iv.addWidget(label("Legacy engines", "h3"))
+        self.legacy_omni = QCheckBox("Show the legacy voice designer (non-commercial weights — personal tests only)")
+        self.legacy_omni.setChecked(bool(self.s.legacy_omnivoice))
+        self.legacy_omni.toggled.connect(self.set_legacy)
+        iv.addWidget(self.legacy_omni)
+        iv.addWidget(label("VERBATIM 3.6 voices your work with commercially licensed engines by default. The legacy "
+                           "designer is being retired and will be removed in a future version.", "hint", wrap=True))
+        iv.addWidget(hline())
+
         iv.addWidget(label("Data", "h3"))
         row = QHBoxLayout()
         b = QPushButton("Open VERBATIM data folder")
@@ -1962,6 +1936,43 @@ class Window(QMainWindow):
         sc.setWidget(inner)
         v.addWidget(sc, 1)
         return c
+
+    def save_cloud(self):
+        from . import cloud
+
+        cc = cloud.CloudConfig.load()
+        cc.enabled = self.cloud_on.isChecked()
+        cc.url = self.cloud_url.text().strip().rstrip("/")
+        cc.engines = [k for k, cb in self.cloud_engines.items() if cb.isChecked()]
+        cc.save()
+        if self.cloud_token.text().strip():
+            cloud.token(self.cloud_token.text().strip())
+            self.cloud_token.clear()
+            self.cloud_token.setPlaceholderText("stored in your system keychain")
+        self.cloud_status.setText("Saved. " + ("Cloud GPU is ON for: " + ", ".join(cc.engines) if cc.enabled and cc.url
+                                               else "Cloud GPU is off — everything runs on this computer."))
+        self.say("Cloud GPU settings saved")
+        if hasattr(self, "video"):
+            self.video.refresh()
+
+    def test_cloud(self):
+        from . import cloud
+
+        url = self.cloud_url.text().strip()
+        tok = self.cloud_token.text().strip() or cloud.token()
+        self.cloud_status.setText("Testing…")
+        QApplication.processEvents()
+        h = cloud.health(url, tok)
+        if h.get("ok"):
+            self.cloud_status.setText(f"✓ Connected — VERBATIM Cloud {h.get('version', '')} on {h.get('device', '?')}"
+                                      f"{' (busy)' if h.get('busy') else ''}. Engines: {', '.join(h.get('ops', []))}.")
+        else:
+            self.cloud_status.setText("✗ " + str(h.get("error", "no answer")))
+
+    def set_legacy(self, on: bool):
+        self.s.legacy_omnivoice = bool(on)
+        self.s.save()
+        self.say("Legacy voice designer " + ("shown" if on else "hidden"))
 
     def fill_models(self):
         from .models import CATALOG, is_installed
@@ -2167,15 +2178,13 @@ class Window(QMainWindow):
         self.overall.setValue(0)
         self.say(f"Batch started: {len(todo)} file(s) · {self.engine.currentText()} · language "
                  f"{self.lang.currentText()} · cross-check {'on' if s.cross_check else 'off'}")
-        self.thread = QThread()
+        from . import qt_workers
+
         self.worker = BatchWorker([r.path for r in todo], s)
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.run)
         self.worker.status.connect(self.on_status)
         self.worker.result.connect(self.on_result)
         self.worker.finished.connect(self.on_finished)
-        self.worker.finished.connect(self.thread.quit)
-        self.thread.start()
+        self.thread = qt_workers.start(self.worker, self.worker.run, [self.worker.finished])
 
     def on_status(self, key: str, frac: float, msg: str):
         r = self.by_key.get(key)
@@ -2198,6 +2207,7 @@ class Window(QMainWindow):
         if batch:
             prog = sum(1.0 if b.state in ("ready", "failed", "stopped") else b.frac for b in batch) / len(batch)
             self.overall.setValue(int(100 * prog))
+            self.mast.ruler.set_progress(prog)
         self.update_summary()
 
     def on_result(self, key: str, info: dict):
@@ -2211,9 +2221,10 @@ class Window(QMainWindow):
     def on_finished(self, out: dict):
         self.running = False
         self.start.setEnabled(True)
-        self.start.setText("   Start Transcription")
+        self.start.setText("   Start transcription")
         self.stop.setEnabled(False)
         self.overall.setVisible(False)
+        self.mast.ruler.set_progress(None)
         for r in getattr(self, "batch", []):
             if r.state in ("queued", "processing", "transcribing"):
                 r.state, r.message = "stopped", "Not started (batch stopped)"
@@ -2262,6 +2273,15 @@ class Window(QMainWindow):
             self.collect_settings()
         except Exception:
             pass
+        try:
+            from .runtimes import EngineHost
+
+            EngineHost.shutdown()
+        except Exception:
+            pass
+        from . import qt_workers
+
+        qt_workers.shutdown(1500)
         e.accept()
 
     # ------------------------------------------------------------------ updates
@@ -2294,17 +2314,14 @@ class Window(QMainWindow):
             self.say("Checking GitHub for updates…")
             if hasattr(self, "gh_status"):
                 self.gh_status.setText("Checking GitHub…")
-        self.uthread = QThread()
+        from . import qt_workers
+
         self.uworker = UpdateWorker(self.s.update_manifest_url)
-        self.uworker.moveToThread(self.uthread)
-        self.uthread.started.connect(self.uworker.run)
         self.uworker.status.connect(self.on_update_status)
         self.uworker.models_found.connect(self.on_models_found)
+        self.uworker.finished.connect(self.on_update_check_done)
         self._manual_check = manual
-        self.uthread.finished.connect(self.on_update_check_done)
-        self.uworker.finished.connect(self.uthread.quit)
-        QTimer.singleShot(30000, self.uthread.quit)
-        self.uthread.start()
+        self.uthread = qt_workers.start(self.uworker, self.uworker.run, [self.uworker.finished])
 
     def on_update_check_done(self):  # slot (runs on the UI thread)
         self._checking = False
@@ -2328,11 +2345,10 @@ class Window(QMainWindow):
         self.new_version = version
         self.banner_text.setText(f"<b>VERBATIM {version} is available on GitHub.</b>  {notes[:160]}")
         self.banner.setVisible(True)
-        if hasattr(self, "upd_btn"):
-            self.upd_btn.setText(f"  Update to {version}")
-            self.upd_btn.setProperty("accent", True)
-            self.upd_btn.style().unpolish(self.upd_btn)
-            self.upd_btn.style().polish(self.upd_btn)
+        if hasattr(self, "rail"):
+            self.rail.update_btn.dot = True
+            self.rail.update_btn.setToolTip(f"Update to VERBATIM {version}")
+            self.rail.update_btn.update()
         self.say(f"Update available: {version}")
 
     def header_update_clicked(self):
@@ -2368,14 +2384,12 @@ class Window(QMainWindow):
         self.idlg.setWindowModality(Qt.WindowModal)
         self.idlg.setMinimumDuration(0)
         self.idlg.setValue(0)
-        self.ithread = QThread()
+        from . import qt_workers
+
         self.iworker = InstallWorker(info)
-        self.iworker.moveToThread(self.ithread)
-        self.ithread.started.connect(self.iworker.run)
         self.iworker.progress.connect(self.idlg.setValue)
         self.iworker.done.connect(self.on_install_done)
-        self.iworker.done.connect(self.ithread.quit)
-        self.ithread.start()
+        self.ithread = qt_workers.start(self.iworker, self.iworker.run, [self.iworker.done])
 
     def on_install_done(self, ok: bool, msg: str):  # slot
         self.idlg.close()
@@ -2430,13 +2444,16 @@ class Window(QMainWindow):
         if self.running:
             QMessageBox.information(self, "Busy", "Models will download after the current batch — try again then.")
             return
-        self.mthread = QThread()
+        from . import qt_workers
+
+        if getattr(self, "mthread", None) is not None and self.mthread.isRunning():
+            QMessageBox.information(self, "Downloading", "A model download is already running — it continues in the "
+                                    "background; progress shows at the bottom of the window.")
+            return
         self.mworker = ModelWorker(jobs)
-        self.mworker.moveToThread(self.mthread)
-        self.mthread.started.connect(self.mworker.run)
         self.mworker.progress.connect(self.on_model_progress)
         self.mworker.done.connect(self.on_models_done)
-        self.mthread.start()
+        self.mthread = qt_workers.start(self.mworker, self.mworker.run, [self.mworker.done])
 
     def on_model_progress(self, m: str):
         self.say(m)
@@ -2445,7 +2462,6 @@ class Window(QMainWindow):
     def on_models_done(self, names: str):
         self.say(f"Models ready: {names}")
         self.fill_models()
-        self.mthread.quit()
 
 
 def _app():
@@ -2455,8 +2471,11 @@ def _app():
     app.setApplicationName("VERBATIM")
     app.setOrganizationName("Infinite Story")
     app.setStyle("Fusion")
+    fams = th.load_fonts(asset("fonts"))
     f = app.font()
-    if IS_WINDOWS:
+    if th.UI in fams:
+        f.setFamily(th.UI)
+    elif IS_WINDOWS:
         f.setFamily("Segoe UI")
     f.setPointSizeF(max(f.pointSizeF(), 10.0))
     app.setFont(f)
@@ -2467,7 +2486,13 @@ def main():
     app = _app()
     w = Window()
     w.show()
-    return app.exec()
+    code = app.exec()
+    from . import qt_workers
+
+    if qt_workers.running():      # a download still blocked in network I/O: leave without a crash report
+        sys.stdout.flush()
+        os._exit(code)
+    return code
 
 
 def selftest(png_path: str) -> int:

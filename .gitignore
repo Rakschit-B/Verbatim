@@ -8,5 +8,3 @@ dist/
 .pytest_cache/
 .DS_Store
 bundled_models/
-llama.cpp/
-*.verbatimvoices

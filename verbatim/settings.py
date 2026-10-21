@@ -51,6 +51,7 @@ class Settings:
     base_vocabulary: str = ""               # vocabulary / output folder used when no project is active
     base_output_dir: str = ""
     theme: str = "light"                    # light | dark | system (3.0 interface)
+    legacy_omnivoice: bool = False          # 3.6: OmniVoice (non-commercial weights) is legacy, off unless chosen
     last_update_check: str = ""
     settings_version: int = 2
 

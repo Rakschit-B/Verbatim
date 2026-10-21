@@ -37,7 +37,17 @@ KEYRING_SERVICE = "VERBATIM-Claude"
 
 
 # ====================================================================== API key
+_KEY_CACHE: dict = {}
+
+
 def get_claude_key() -> str:
+    if "k" in _KEY_CACHE:
+        return _KEY_CACHE["k"]
+    _KEY_CACHE["k"] = _get_claude_key()
+    return _KEY_CACHE["k"]
+
+
+def _get_claude_key() -> str:
     import os
 
     if os.environ.get("ANTHROPIC_API_KEY"):
@@ -54,6 +64,7 @@ def set_claude_key(key: str):
     import keyring
 
     keyring.set_password(KEYRING_SERVICE, "api_key", key.strip())
+    _KEY_CACHE["k"] = key.strip()
 
 
 # ====================================================================== helpers

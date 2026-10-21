@@ -1,8 +1,8 @@
 # Copyright © 2026 Infinite Story LLP. All rights reserved.
 # VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
 # distribution of this file, via any medium, is strictly prohibited.
-"""VERBATIM engine host — runs the PyTorch engines (OmniVoice, OpenVoice V2, ACE-Step 1.5, quality
-scorers) in their own Python runtime, so their heavy and conflicting dependencies never touch the app.
+"""VERBATIM engine host — runs the PyTorch engines (OpenVoice V2 tone colour, ACE-Step 1.5 music, LatentSync
+lip-sync on a Cloud GPU, quality scorers and the legacy designer) in their own Python runtime, so their heavy and conflicting dependencies never touch the app.
 
 Protocol: one JSON object per line on stdin → one JSON object per line on stdout
   {"id": 1, "op": "omnivoice", ...}   →   {"id": 1, "ok": true, ...}  or  {"id": 1, "ok": false, "error": "..."}
@@ -177,6 +177,30 @@ def op_music(req: dict, rid):
     return generate(req, lambda f, m: send({"id": rid, "progress": f, "message": m}), _CACHE)
 
 
+# ---------------------------------------------------------------- lip-sync (Cloud GPU)
+def op_lipsync(req: dict, rid):
+    """Re-time the mouths in `video` to `audio` with LatentSync 1.6 (Apache-2.0, ByteDance). NVIDIA GPU only.
+    The server install (cloud/install.sh) puts the LatentSync source + checkpoints in $VERBATIM_LATENTSYNC."""
+    import subprocess
+
+    root = Path(os.environ.get("VERBATIM_LATENTSYNC", str(Path.home() / "LatentSync")))
+    if not (root / "scripts" / "inference.py").exists():
+        raise RuntimeError("LatentSync is not installed on this server — run cloud/install.sh --with-lipsync")
+    cfg = root / "configs" / "unet" / ("stage2_512.yaml" if (root / "configs/unet/stage2_512.yaml").exists() else "stage2.yaml")
+    send({"id": rid, "progress": 0.1, "message": "Lip-syncing every face (LatentSync)…"})
+    t0 = time.time()
+    cmd = [sys.executable, "-m", "scripts.inference", "--unet_config_path", str(cfg),
+           "--inference_ckpt_path", str(root / "checkpoints" / "latentsync_unet.pt"),
+           "--inference_steps", str(int(req.get("steps", 20))), "--guidance_scale", str(float(req.get("guidance", 1.5))),
+           "--video_path", req["video"], "--audio_path", req["audio"], "--video_out_path", req["out"]]
+    if req.get("deepcache", True):
+        cmd.append("--enable_deepcache")
+    r = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True)
+    if r.returncode != 0 or not Path(req["out"]).exists():
+        raise RuntimeError("LatentSync failed: " + (r.stderr or r.stdout)[-600:])
+    return {"out": req["out"], "elapsed": time.time() - t0}
+
+
 def op_ping(req: dict, rid):
     info = {"python": sys.version.split()[0], "pid": os.getpid()}
     try:
@@ -189,7 +213,7 @@ def op_ping(req: dict, rid):
 
 
 OPS = {"ping": op_ping, "omnivoice": op_omnivoice, "openvoice_convert": op_openvoice_convert,
-       "utmos": op_utmos, "emotion": op_emotion, "music": op_music}
+       "utmos": op_utmos, "emotion": op_emotion, "music": op_music, "lipsync": op_lipsync}
 
 
 def main():

@@ -33,6 +33,15 @@ following third-party components, which remain under their own licences; their n
 | pykakasi | Japanese reading for Chatterbox | GPL-3.0-or-later → optional, not bundled |
 | ElevenLabs text-to-speech / voice cloning API | optional cloud voices (user's own key) | ElevenLabs terms of service (no code bundled) |
 | Microsoft Azure AI Speech (Neural TTS REST API) | optional cloud voices (user's own key) | Microsoft terms (no code bundled) |
+| ACE-Step 1.5 (code at the pinned commit + Ace-Step1.5 / acestep-5Hz-lm weights) | Music Studio — downloaded on first use | MIT |
+| OpenVoice V2 (MyShell.ai; model code vendored in `engine_host/openvoice`, weights downloaded) | voice tone colour, singing conversion | MIT |
+| PyTorch, torchaudio, transformers, diffusers, librosa (engine runtime, installed on first use) | engines | BSD / Apache-2.0 / ISC |
+| python-build-standalone (Astral) | engine runtime interpreter | PSF + component licences |
+| UTMOS22 (SpeechMOS implementation) · wav2vec2 SUPERB ER | quality scorecard | MIT · Apache-2.0 |
+| OmniVoice (k2-fsa) — **legacy, opt-in, not bundled**; weights CC-BY-NC-4.0 (non-commercial) | legacy voice designer (being retired) | Apache-2.0 code / CC-BY-NC weights |
+| Phosphor Icons 2.1 (glyph geometry in `verbatim/icons_phosphor.py`) | interface icons | MIT (© 2023 Phosphor Icons) |
+| Instrument Serif, Hanken Grotesk, JetBrains Mono, Mukta (`assets/fonts`, licence texts alongside) | interface typefaces | SIL Open Font License 1.1 |
+| LatentSync 1.6 (ByteDance) — Cloud GPU server only, installed by `cloud/install.sh`, not bundled in the app | lip-sync in Video Localise | Apache-2.0 |
 | `tests/data/jfk.flac` (from openai/whisper tests) | test fixture | MIT |
 
 No code from MacWhisper, TurboScribe, Fireflies, Cockatoo or ElevenLabs' proprietary services is included;

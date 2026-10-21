@@ -119,14 +119,35 @@ def omni_installed() -> bool:
         (models_dir() / "omnivoice" / "audio_tokenizer" / "model.safetensors").exists()
 
 
+def openvoice_ready() -> bool:
+    from .cloud import active_for
+    from .platform_info import models_dir
+
+    if active_for("voice"):
+        return True
+    from . import runtimes
+
+    return (models_dir() / "openvoice" / "converter" / "checkpoint.pth").exists() and runtimes.is_ready("voice")
+
+
+def omni_enabled() -> bool:
+    """3.6: OmniVoice ships non-commercial weights, so it is legacy — used only when switched on in Settings."""
+    try:
+        from .settings import Settings
+
+        return bool(Settings.load().legacy_omnivoice)
+    except Exception:
+        return False
+
+
 def omni_voices(lang: str) -> list[Voice]:
-    if not omni_installed():
+    if not (omni_enabled() and omni_installed()):
         return []
     out = []
     for key, name, g, instruct in OMNI_DESIGNS:
         if "accent" in instruct and lang != "en":
             continue
-        out.append(Voice(f"ov:d:{key}", f"{name} · OmniVoice", g, instruct.split(", ", 1)[1], "ov", (lang,)))
+        out.append(Voice(f"ov:d:{key}", f"{name} · designed (legacy)", g, instruct.split(", ", 1)[1], "ov", (lang,)))
     return out
 
 
@@ -158,7 +179,7 @@ def cloud_voices(lang: str) -> list[Voice]:
     try:
         from . import tts_cloud
 
-        if tts_cloud.azure_key()[0]:
+        if tts_cloud.azure_configured():
             for name, label, g in tts_cloud.AZURE_VOICES.get(lang, []):
                 out.append(Voice(f"az:{name}", f"{label} · Azure", g, "Azure Neural", "az", (lang,)))
     except Exception:
@@ -383,10 +404,9 @@ class Synth:
         emo, inten = d.get("emotion", "neutral"), float(d.get("intensity", 0.5) or 0.5)
         pref = self.clone_engine
         ref, sr = voicelab.reference(cv)
-        if pref == "omnivoice" or (pref == "auto" and omni_installed() and lang not in tts_chatterbox.LANGS):
-            a = self._omni(text, lang, ref_wav=str(cv.ref_wav), ref_text=cv.ref_text, speed=speed, direction=d)
-            return a
-        if pref == "openvoice":   # expressive studio performance, re-voiced with this voice's tone colour
+        if pref == "omnivoice" and omni_enabled():
+            return self._omni(text, lang, ref_wav=str(cv.ref_wav), ref_text=cv.ref_text, speed=speed, direction=d)
+        if pref == "openvoice" or (pref == "auto" and lang not in tts_chatterbox.LANGS and openvoice_ready()):   # expressive studio performance, re-voiced with this voice's tone colour
             base = self.speak(text, lang, self.timbre_base(lang, cv.gender), speed, d)
             return self._timbre(base, [str(cv.ref_wav)] + ([str(cv.folder / "full_voice.wav")]
                                                            if (cv.folder / "full_voice.wav").exists() else []))
@@ -412,8 +432,10 @@ class Synth:
             a, r = el.speak(dr.eleven_text(text, emo, inten, d.get("emphasis", "")), cv.eleven_id, lang, speed,
                             dr.eleven_settings(emo, inten))
             return resample(a, r)
+        if omni_enabled() and omni_installed():
+            return self._omni(text, lang, ref_wav=str(cv.ref_wav), ref_text=cv.ref_text, speed=speed, direction=d)
         raise RuntimeError(f"To speak {lang} in “{cv.name}”, download the Expressive voice pack (Chatterbox) "
-                           "in Settings › Voice engines, or clone it to ElevenLabs.")
+                           "or the Tone-colour pack (OpenVoice) in Voice Lab › Voice engines, or clone it to ElevenLabs.")
 
     # ------------------------------------------------------------ OmniVoice / OpenVoice (engine host)
     def _host(self):
@@ -429,8 +451,10 @@ class Synth:
         from .voicelab import read_wav
 
         d = direction or {}
+        from .cloud import active_for
+
         md = models_dir() / "omnivoice"
-        if not omni_installed():
+        if not omni_installed() and not active_for("voice"):
             from .download import hf_files
 
             hf_files("k2-fsa/OmniVoice", md, self.progress)
@@ -472,8 +496,10 @@ class Synth:
         from .platform_info import models_dir
         from .voicelab import read_wav, write_wav
 
+        from .cloud import active_for
+
         md = models_dir() / "openvoice"
-        if not (md / "converter" / "checkpoint.pth").exists():
+        if not (md / "converter" / "checkpoint.pth").exists() and not active_for("voice"):
             from .download import hf_files
 
             hf_files("myshell-ai/OpenVoiceV2", md, self.progress, exclude=r"\.DS_Store")

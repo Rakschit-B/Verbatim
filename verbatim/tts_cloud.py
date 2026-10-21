@@ -90,13 +90,36 @@ def eleven_key() -> str:
     return _kr("elevenlabs_api_key")
 
 
+_CACHE: dict = {}
+
+
+def _flag(name: str):
+    from .platform_info import user_data_dir
+
+    return user_data_dir() / f".{name}.configured"
+
+
+def azure_configured() -> bool:
+    """Cheap check (a marker file) — never touches the Keychain, so building the UI cannot trigger macOS
+    Keychain prompts (3.6 fix: 62 Keychain reads at startup could look like the app hanging)."""
+    return _flag("azure").exists()
+
+
 def azure_key() -> tuple[str, str]:
-    return _kr("azure_speech_key"), _kr("azure_speech_region") or "centralindia"
+    if "azure" not in _CACHE:
+        _CACHE["azure"] = (_kr("azure_speech_key"), _kr("azure_speech_region") or "centralindia")
+    return _CACHE["azure"]
 
 
 def set_azure(key: str, region: str):
     _kr("azure_speech_key", key.strip())
     _kr("azure_speech_region", region.strip() or "centralindia")
+    _CACHE.pop("azure", None)
+    f = _flag("azure")
+    if key.strip():
+        f.write_text("1")
+    else:
+        f.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------- HTTP

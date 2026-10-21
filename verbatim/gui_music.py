@@ -8,7 +8,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox,
+from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+                               QDoubleSpinBox, QMenu, QToolButton,
                                QFileDialog, QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
                                QScrollArea, QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
@@ -356,20 +357,34 @@ class MusicStudio(QWidget):
         self.empty.setAlignment(Qt.AlignCenter)
         v.addWidget(self.empty)
         acts = QHBoxLayout()
+        acts.setSpacing(6)
         for text, fn, tip in (("▶  Play", self.play, "Play the selected take"),
                               ("■", self.stop, "Stop"),
                               ("♥  Favourite", self.favourite, "Keep this take"),
                               ("Re-roll", self.reroll, "Same settings, new seed"),
-                              ("Reuse", self.reuse, "Load this take's settings into the composer"),
-                              ("Remix…", self.remix, "Cover, repaint or extend this take"),
-                              ("Stems", self.stems, "Separate vocals and instrumental"),
-                              ("Use as voiceover bed", self.use_as_bed, "Send this take to Voice Studio as the music bed"),
-                              ("Open folder", self.open_folder, "")):
+                              ("Remix…", self.remix, "Cover, repaint or extend this take")):
             b = QPushButton(text)
             b.setToolTip(tip)
             b.clicked.connect(fn)
             acts.addWidget(b)
+        sing = QPushButton("  Sing it in my voice…")
+        sing.setObjectName("pillBtn")
+        sing.setProperty("accent", True)
+        sing.setToolTip("Re-sing this take's vocals in one of your consented Voice Lab voices — melody and timing stay")
+        sing.clicked.connect(self.sing_as)
+        acts.addWidget(sing)
         acts.addStretch()
+        more = QToolButton()
+        more.setText("More  ▾")
+        more.setPopupMode(QToolButton.InstantPopup)
+        m = QMenu(more)
+        m.addAction("Reuse these settings", self.reuse)
+        m.addAction("Separate stems (vocals / instrumental)", self.stems)
+        m.addAction("Use as voiceover music bed", self.use_as_bed)
+        m.addSeparator()
+        m.addAction("Open folder", self.open_folder)
+        more.setMenu(m)
+        acts.addWidget(more)
         v.addLayout(acts)
         self.fill_engines()
         return c
@@ -438,14 +453,12 @@ class MusicStudio(QWidget):
         self.go.setEnabled(False)
         self.bar.setVisible(True)
         self.status.setText(text)
-        self.thread = QThread()
+        from . import qt_workers
+
         self.worker = _Job(fn)
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self.on_progress)
         self.worker.done.connect(done)
-        self.worker.done.connect(self.thread.quit)
-        self.thread.start()
+        self.thread = qt_workers.start(self.worker, self.worker.run, [self.worker.done])
 
     def on_progress(self, f, m):
         self.bar.setValue(int(1000 * max(0.0, min(1.0, f))))
@@ -586,6 +599,13 @@ class MusicStudio(QWidget):
         err = self.player.play(Path(f), 0.0, 600.0)
         self.status.setText("Could not play: " + err if err else f"Playing “{it['title']}” take {it['take']}")
 
+    def player_play(self, f: str):
+        from .gui_editor import AudioPlayer
+
+        if self.player is None:
+            self.player = AudioPlayer()
+        self.player.play(Path(f), 0.0, 600.0)
+
     def stop(self):
         if self.player:
             try:
@@ -646,6 +666,63 @@ class MusicStudio(QWidget):
                                    (self.status.setText("Stems saved next to the take."),
                                     QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(res["vocals"]).parent))))),
                  "Separating vocals and instrumental…")
+
+    def sing_as(self):
+        it = self.selected()
+        if not it:
+            QMessageBox.information(self, "Sing it in my voice", "Select a take with vocals first.")
+            return
+        from . import voicelab
+
+        voices = [cv for cv in voicelab.library() if cv.consent_id]
+        if not voices:
+            QMessageBox.information(self, "Sing it in my voice",
+                                    "Create a custom voice in Voice Studio › Voice Lab first (with its consent record).")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Sing it in my voice")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(_label(f"“{it['title']}” — take {it['take']}", "h2"))
+        lay.addWidget(_label("The melody, timing and phrasing stay; the singer's tone becomes the chosen voice. "
+                             "Works best on clear lead vocals.", "hint", wrap=True))
+        who = QComboBox()
+        for cv in voices:
+            who.addItem(f"{cv.name}  ·  {cv.owner or cv.character}", cv.id)
+        lay.addWidget(who)
+        lay.addWidget(_label("Likeness", "sub"))
+        like = QSlider(Qt.Horizontal)
+        like.setRange(0, 100)
+        like.setValue(70)
+        lay.addWidget(like)
+        lay.addWidget(_label("Higher = closer to the chosen voice; lower keeps more of the original singer's colour.",
+                             "hint", wrap=True))
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("Sing it")
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        vid, k = who.currentData(), like.value() / 100
+        tau = 0.45 - 0.3 * k                  # 0.15 (closest) … 0.45 (loosest)
+        keep = 0.25 * (1 - k)
+        wav = it["files"]["wav"]
+
+        def done(res, err):
+            self.finish()
+            if err:
+                QMessageBox.warning(self, "Sing it in my voice", err)
+                return
+            items = ms.load_history(self.w.s.output_dir)
+            for x in items:
+                if x["id"] == it["id"]:
+                    x.setdefault("versions", []).append(res)
+            ms.save_history(self.w.s.output_dir, items)
+            self.status.setText(f"Sung by {res['voice']} — saved next to the take.")
+            self.w.say(f"Music Studio: “{it['title']}” sung by {res['voice']} → {res['wav']}")
+            self.player_play(res["wav"])
+
+        self.run(lambda p: ms.sing_as(wav, vid, p, tau=tau, keep_original=keep), done, "Singing it in your voice…")
 
     def use_as_bed(self):
         it = self.selected()

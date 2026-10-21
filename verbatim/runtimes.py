@@ -30,7 +30,7 @@ PBS_URL = ("https://github.com/astral-sh/python-build-standalone/releases/downlo
 
 _TORCH = ["torch==2.9.0", "torchaudio==2.9.0"]
 RUNTIMES = {
-    "voice": {"label": "Voice engines — OmniVoice, OpenVoice V2, quality scoring",
+    "voice": {"label": "Voice engines — OpenVoice V2 tone colour, singing conversion, quality scoring",
               "size_mb": 1400,
               "packages": _TORCH + ["transformers>=5.3,<6", "accelerate>=1.10", "safetensors", "librosa>=0.10",
                                     "soundfile", "numpy<2.4", "omnivoice==0.2.1", "pydub"],
@@ -208,6 +208,10 @@ class EngineHost:
 
     @classmethod
     def get(cls, name: str, progress=None) -> "EngineHost":
+        from . import cloud
+
+        if cloud.active_for(name):              # Settings › Cloud GPU: run this engine on your GPU server
+            return cloud.RemoteHost(name)
         h = cls._hosts.get(name)
         if h is None or h.proc.poll() is not None:
             py = ensure(name, progress)

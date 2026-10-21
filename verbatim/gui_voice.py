@@ -334,10 +334,13 @@ class VoiceStudio(QWidget):
         self.clone_engine = QComboBox()
         self.clone_engine.addItem("Best available (offline first)", "auto")
         self.clone_engine.addItem("Chatterbox — expressive, 23 languages", "chatterbox")
-        self.clone_engine.addItem("OmniVoice — 600+ languages, closest clone", "omnivoice")
         self.clone_engine.addItem("Studio performance + your tone (OpenVoice)", "openvoice")
         self.clone_engine.addItem("ZipVoice — English, fast", "zipvoice")
         self.clone_engine.addItem("ElevenLabs — cloud clone", "elevenlabs")
+        from .tts import omni_enabled
+
+        if omni_enabled():
+            self.clone_engine.addItem("Legacy designer (non-commercial)", "omnivoice")
         self.clone_engine.setMinimumContentsLength(10)
         self.clone_engine.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         row.addWidget(self.clone_engine, 1)
@@ -677,14 +680,12 @@ class VoiceStudio(QWidget):
         if self.thread and self.thread.isRunning():
             return
         self.busy(True, start_text)
-        self.thread = QThread()
+        from . import qt_workers
+
         self.worker = Job(fn)
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self.on_progress)
         self.worker.done.connect(done_cb)
-        self.worker.done.connect(self.thread.quit)
-        self.thread.start()
+        self.thread = qt_workers.start(self.worker, self.worker.run, [self.worker.done])
 
     def on_progress(self, f: float, msg: str):
         self.bar.setValue(int(1000 * max(0.0, min(1.0, f))))
@@ -1131,7 +1132,6 @@ class VoiceStudio(QWidget):
                 it.widget().deleteLater()
         packs = [("cb", "Expressive voices — Chatterbox (emotion, 23 languages incl. Hindi & Hebrew, speaks your "
                         "custom voices)", tts_chatterbox.SIZE_MB),
-                 ("ov", "OmniVoice — closest voice cloning and voice design, 600+ languages", 3300),
                  ("op", "OpenVoice V2 — keeps a performance, swaps the voice's tone colour", 150),
                  ("zv", "ZipVoice — fast English voice cloning", tts.ENGINES["zv"]["size_mb"]),
                  ("st", "Studio voices — Supertonic (10 voices × 31 languages)", tts.ENGINES["st"]["size_mb"]),
@@ -1140,8 +1140,6 @@ class VoiceStudio(QWidget):
         from .platform_info import models_dir
 
         def installed(key):
-            if key == "ov":
-                return tts.omni_installed() and runtimes.is_ready("voice")
             if key == "op":
                 return (models_dir() / "openvoice" / "converter" / "checkpoint.pth").exists() and runtimes.is_ready("voice")
             return tts.is_installed(key)
@@ -1163,13 +1161,10 @@ class VoiceStudio(QWidget):
             from .download import hf_files
             from .platform_info import models_dir
 
-            if key in ("ov", "op"):
+            if key == "op":
                 runtimes.ensure("voice", lambda f, m: progress(0.4 * f, m))
-                if key == "ov":
-                    hf_files("k2-fsa/OmniVoice", models_dir() / "omnivoice", lambda f, m: progress(0.4 + 0.6 * f, m))
-                else:
-                    hf_files("myshell-ai/OpenVoiceV2", models_dir() / "openvoice",
-                             lambda f, m: progress(0.4 + 0.6 * f, m), exclude=r"\.DS_Store")
+                hf_files("myshell-ai/OpenVoiceV2", models_dir() / "openvoice",
+                         lambda f, m: progress(0.4 + 0.6 * f, m), exclude=r"\.DS_Store")
             else:
                 tts.ensure(key, progress)
             return key

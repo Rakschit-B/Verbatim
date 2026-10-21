@@ -183,7 +183,11 @@ def ensure_models(progress=None, max_mode: bool = False) -> Path:
     """Download the music model once (≈ 8 GB; Max mode adds the SFT model)."""
     from .download import hf_files
 
+    from .cloud import active_for
+
     root = checkpoints_root()
+    if active_for("music"):                # the Cloud GPU server keeps its own copy of the model
+        return root
     ck = root / "checkpoints"
     need = [("ACE-Step/Ace-Step1.5", ck, r"^acestep-5Hz-lm-1\.7B/")]
     if not (ck / "acestep-5Hz-lm-0.6B" / "config.json").exists():
@@ -301,3 +305,80 @@ def _log(output_dir, items):
         MasterLog(Path(output_dir)).record_music(items)
     except Exception:
         pass
+
+
+# ====================================================================== sing it in your voice (3.6)
+def ensure_tone_engine(progress=None) -> Path:
+    """OpenVoice V2 tone-colour converter (MIT) — runs in the voice runtime, or on the Cloud GPU."""
+    from . import runtimes
+    from .cloud import active_for
+    from .platform_info import models_dir
+
+    md = models_dir() / "openvoice"
+    if active_for("voice"):
+        return md
+    runtimes.ensure("voice", (lambda f, m: progress(0.3 * f, m)) if progress else None)
+    if not (md / "converter" / "checkpoint.pth").exists():
+        from .download import hf_files
+
+        hf_files("myshell-ai/OpenVoiceV2", md, (lambda f, m: progress(0.3 + 0.2 * f, m)) if progress else None,
+                 exclude=r"\.DS_Store")
+    return md
+
+
+def sing_as(path: str, voice_id: str, progress=None, tau: float = 0.25, keep_original: float = 0.0) -> dict:
+    """Re-sing a song's vocals in one of your consented custom voices.
+
+    1. split the song into vocals + instrumental (UVR MDX-Net, offline);
+    2. move the vocal's tone colour to the chosen voice (OpenVoice V2) — melody, timing and phrasing stay;
+    3. level-match and remix over the instrumental, master, write WAV + MP3 next to the take.
+    `keep_original` (0–0.5) blends a little of the original singer back for air and breath."""
+    import tempfile
+
+    import numpy as np
+
+    from .dub import _ffmpeg
+    from .music import SR, loudness_normalise, write_stereo_wav
+    from .runtimes import EngineHost
+    from .tts import resample
+    from .voicelab import decode, get, read_wav, separate, write_wav
+
+    say = progress or (lambda f, m: None)
+    cv = get(voice_id)
+    if cv is None:
+        raise RuntimeError("That voice is not in your Voice Lab any more.")
+    if not cv.consent_id:
+        raise RuntimeError(f"“{cv.name}” has no consent record — add one in Voice Studio › Consent register first.")
+    md = ensure_tone_engine(say)
+    say(0.5, "Separating vocals from the music…")
+    mix = decode(path, 44100, 2)
+    vocals, music = separate(mix, 44100, lambda f, m: say(0.5 + 0.25 * f, m))
+    tmp = Path(tempfile.mkdtemp())
+    vm = vocals.mean(1)
+    write_wav(tmp / "vocals.wav", vm, 44100)
+    targets = [str(cv.ref_wav)] + ([str(cv.folder / "full_voice.wav")] if (cv.folder / "full_voice.wav").exists() else [])
+    say(0.76, f"Singing it as {cv.name}…")
+    EngineHost.get("voice", say).request("openvoice_convert", ckpt_dir=str(md), src_wav=str(tmp / "vocals.wav"),
+                                         tgt_wavs=targets, out=str(tmp / "sung.wav"), tau=float(tau))
+    sung, sr = read_wav(tmp / "sung.wav")
+    sung = resample(sung, sr, 44100)
+    n = min(len(sung), len(vm))
+    sung = np.pad(sung[:n], (0, len(vm) - n))
+    ref_rms = float(np.sqrt(np.mean(vm ** 2)) + 1e-9)
+    sung *= ref_rms / float(np.sqrt(np.mean(sung ** 2)) + 1e-9)
+    k = max(0.0, min(0.5, float(keep_original)))
+    voc = (1 - k) * np.stack([sung, sung], 1) + k * vocals
+    out = music + voc
+    out = np.stack([resample(out[:, c], 44100, SR) for c in range(2)], 1)
+    out = loudness_normalise(out, -14.0)
+    base = Path(path)
+    stem = base.with_name(f"{base.stem} — sung by {cv.name}")
+    wav = stem.with_suffix(".wav")
+    write_stereo_wav(wav, out)
+    mp3 = stem.with_suffix(".mp3")
+    _ffmpeg(["-i", str(wav), "-codec:a", "libmp3lame", "-b:a", "320k",
+             "-metadata", f"title={base.stem} (sung by {cv.name})", "-metadata", "artist=VERBATIM Music Studio",
+             "-metadata", "copyright=© Infinite Story LLP", "-metadata", f"comment=Voice: {cv.name} · consent {cv.consent_id}",
+             str(mp3)])
+    say(1.0, f"Sung by {cv.name}.")
+    return {"wav": str(wav), "mp3": str(mp3) if mp3.exists() else "", "voice": cv.name}
