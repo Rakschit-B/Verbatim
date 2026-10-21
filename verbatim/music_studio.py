@@ -92,7 +92,7 @@ def to_engine(r: MusicRequest, project_root: str, out_dir: str) -> dict:
         "lm_temperature": 0.4 + 0.9 * r.weirdness / 100, "lm_cfg_scale": 1.0 + 2.5 * r.style_influence / 100,
         "use_cot_caption": r.variety > 0, "use_cot_metas": not (r.bpm and r.key),
         "lm_negative_prompt": r.exclude.strip() or "NO USER INPUT",
-        "batch_size": max(1, min(4, int(r.takes))), "audio_format": "wav",
+        "batch_size": max(1, min(4, int(r.takes))), "audio_format": "wav32",   # soundfile path: no FFmpeg/torchcodec
         "seeds": [int(r.seed) + k for k in range(max(1, int(r.takes)))] if int(r.seed) >= 0 else None,
     }
     if r.mode == "cover":

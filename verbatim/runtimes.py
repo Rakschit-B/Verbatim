@@ -24,6 +24,7 @@ from pathlib import Path
 from .platform_info import IS_MAC, IS_WINDOWS
 
 PBS_TAG, PBS_PY = "20261013", "3.12.15"
+RUNTIME_REV = 2      # bump to rebuild every runtime (3.5.1: clean environment for pip, see _clean_env)
 PBS_URL = ("https://github.com/astral-sh/python-build-standalone/releases/download/"
            "{tag}/cpython-{py}+{tag}-{arch}-install_only.tar.gz")
 
@@ -33,13 +34,17 @@ RUNTIMES = {
               "size_mb": 1400,
               "packages": _TORCH + ["transformers>=5.3,<6", "accelerate>=1.10", "safetensors", "librosa>=0.10",
                                     "soundfile", "numpy<2.4", "omnivoice==0.2.1", "pydub"],
-              "no_deps": ["omnivoice==0.2.1"]},
+              "no_deps": ["omnivoice==0.2.1"],
+              "check": ["torch", "torchaudio", "transformers", "librosa", "soundfile", "omnivoice"]},
     "music": {"label": "Music engine — ACE-Step 1.5",
               "size_mb": 2200,
               "packages": _TORCH + ["transformers>=4.51,<4.58", "diffusers", "accelerate>=1.10", "einops",
-                                    "safetensors", "soundfile", "scipy", "loguru", "numba", "toml",
-                                    "vector-quantize-pytorch>=1.27", "librosa", "huggingface_hub"]
+                                    "safetensors", "soundfile", "scipy", "loguru", "numba", "toml", "tqdm",
+                                    "pyyaml", "peft>=0.18", "vector-quantize-pytorch>=1.27", "librosa",
+                                    "huggingface_hub", "xxhash"]
                                    + (["mlx>=0.25.2", "mlx-lm>=0.20"] if IS_MAC and platform.machine() == "arm64" else []),
+              "check": ["torch", "torchaudio", "transformers", "diffusers", "loguru", "tqdm", "yaml", "soundfile",
+                        "einops", "vector_quantize_pytorch"],
               "source": ("https://github.com/ace-step/ACE-Step-1.5/archive/{commit}.zip",
                          "ca1e85fe9430179831e6bc6be790c332190a3866")},
 }
@@ -81,7 +86,19 @@ def marker(name: str) -> Path:
 
 def wanted_signature(name: str) -> str:
     spec = RUNTIMES[name]
-    return json.dumps([PBS_PY, spec["packages"], spec.get("source", "")], sort_keys=True)
+    return json.dumps([RUNTIME_REV, PBS_PY, spec["packages"], spec.get("source", "")], sort_keys=True)
+
+
+def _clean_env(extra: dict | None = None) -> dict:
+    """Environment for a runtime's own Python. VERBATIM's launcher sets PYTHONHOME/PYTHONPATH for the app's
+    bundled Python; if those leak into the runtime, pip installs packages somewhere the engine never looks
+    (3.5.0: "No module named 'loguru'"). Strip them and keep user site-packages out."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONUSERBASE", "VIRTUAL_ENV",
+                        "PYTHONEXECUTABLE", "__PYVENV_LAUNCHER__", "PIP_TARGET", "PIP_PREFIX", "PIP_USER")}
+    env.update(PYTHONNOUSERSITE="1", PYTHONUNBUFFERED="1", PIP_DISABLE_PIP_VERSION_CHECK="1")
+    env.update(extra or {})
+    return env
 
 
 def is_ready(name: str) -> bool:
@@ -130,7 +147,7 @@ def ensure(name: str, progress=None) -> str:
                "--progress-bar", "off", *(["--no-deps"] if gi == 1 else []), *pkgs]
         say(0.12 + 0.75 * gi / len(groups), f"Installing {spec['label']} libraries (one time)…")
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
-                             creationflags=flags)
+                             creationflags=flags, env=_clean_env())
         tail = []
         for line in p.stdout:
             line = line.strip()
@@ -141,6 +158,12 @@ def ensure(name: str, progress=None) -> str:
             raise RuntimeError("Could not install the engine libraries:\n" + "\n".join(tail))
     if spec.get("source"):
         _fetch_source(name, spec["source"], say)
+    check = spec.get("check") or []
+    if check:   # prove the engine's libraries import from the runtime itself before declaring it ready
+        r = subprocess.run([py, "-c", "import " + ", ".join(check)], capture_output=True, text=True,
+                           env=_clean_env(), creationflags=flags)
+        if r.returncode != 0:
+            raise RuntimeError("Engine libraries installed but cannot be imported:\n" + r.stderr[-800:])
     marker(name).write_text(json.dumps({"sig": wanted_signature(name)}))
     say(1.0, f"{spec['label']} ready")
     return py
@@ -193,12 +216,11 @@ class EngineHost:
 
     def __init__(self, python: str, name: str = ""):
         flags = 0x08000000 if IS_WINDOWS else 0
-        env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONNOUSERSITE="1", TOKENIZERS_PARALLELISM="false",
-                   HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", PYTORCH_ENABLE_MPS_FALLBACK="1")
+        env = _clean_env({"TOKENIZERS_PARALLELISM": "false", "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
+                          "PYTORCH_ENABLE_MPS_FALLBACK": "1"})
         src = source_dir(name) if name in RUNTIMES else None
         if src:
-            env["PYTHONPATH"] = str(src) + os.pathsep + env.get("PYTHONPATH", "")
-        env.pop("PYTHONHOME", None)
+            env["PYTHONPATH"] = str(src)
         self.log = open(root().parent / f"engine-{name or 'host'}.log", "a", encoding="utf-8", errors="replace") \
             if root().parent.exists() else subprocess.DEVNULL
         self.proc = subprocess.Popen([python, "-u", str(host_script())], stdin=subprocess.PIPE,

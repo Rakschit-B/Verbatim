@@ -88,7 +88,7 @@ def generate(req: dict, progress, cache: dict) -> dict:
     params = GenerationParams(**p)
     seeds = req.get("seeds")
     config = GenerationConfig(batch_size=int(req.get("batch_size", 1)), use_random_seed=not seeds,
-                              seeds=seeds, audio_format=req.get("audio_format", "wav"))
+                              seeds=seeds, audio_format=req.get("audio_format", "wav32"))
     out_dir = Path(req["out_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()

@@ -91,3 +91,11 @@ def test_score_for_voiceover(tmp_path):
     job.save()
     r = ms.score_for_voiceover(str(job.path), "piano")
     assert r.language == "instrumental" and 10 < r.duration < 30 and r.bpm and "piano" in r.style
+
+
+def test_runtime_env_is_clean(monkeypatch):
+    monkeypatch.setenv("PYTHONHOME", "/app/python")
+    monkeypatch.setenv("PYTHONPATH", "/app")
+    env = runtimes._clean_env()
+    assert "PYTHONHOME" not in env and "PYTHONPATH" not in env and env["PYTHONNOUSERSITE"] == "1"
+    assert "loguru" in runtimes.RUNTIMES["music"]["packages"] and "loguru" in runtimes.RUNTIMES["music"]["check"]
