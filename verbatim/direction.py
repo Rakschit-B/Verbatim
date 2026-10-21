@@ -24,16 +24,16 @@ import re
 
 # emotion -> label, chatterbox exaggeration, pace ×, ElevenLabs tag, Azure style
 EMOTIONS: dict[str, dict] = {
-    "neutral":   {"label": "Neutral",   "ex": 0.45, "pace": 1.00, "tag": "",              "az": ""},
-    "warm":      {"label": "Warm",      "ex": 0.55, "pace": 0.97, "tag": "[warmly]",      "az": "friendly"},
-    "inspiring": {"label": "Inspiring", "ex": 0.65, "pace": 0.95, "tag": "[hopeful]",     "az": "hopeful"},
-    "calm":      {"label": "Calm",      "ex": 0.35, "pace": 0.93, "tag": "[calmly]",      "az": "gentle"},
-    "joyful":    {"label": "Joyful",    "ex": 0.75, "pace": 1.03, "tag": "[happily]",     "az": "cheerful"},
-    "excited":   {"label": "Excited",   "ex": 0.85, "pace": 1.06, "tag": "[excited]",     "az": "excited"},
-    "serious":   {"label": "Serious",   "ex": 0.40, "pace": 0.97, "tag": "[seriously]",   "az": "serious"},
-    "sad":       {"label": "Sad",       "ex": 0.55, "pace": 0.92, "tag": "[sorrowful]",   "az": "sad"},
-    "urgent":    {"label": "Urgent",    "ex": 0.80, "pace": 1.08, "tag": "[urgently]",    "az": "excited"},
-    "whisper":   {"label": "Whisper",   "ex": 0.30, "pace": 0.92, "tag": "[whispers]",    "az": "whispering"},
+    "neutral":   {"label": "Neutral",   "ex": 0.45, "pace": 1.00, "tag": "",              "az": "", "range": 1.00},
+    "warm":      {"label": "Warm",      "ex": 0.55, "pace": 0.97, "tag": "[warmly]",      "az": "friendly", "range": 1.08},
+    "inspiring": {"label": "Inspiring", "ex": 0.65, "pace": 0.95, "tag": "[hopeful]",     "az": "hopeful", "range": 1.18},
+    "calm":      {"label": "Calm",      "ex": 0.35, "pace": 0.93, "tag": "[calmly]",      "az": "gentle", "range": 0.9},
+    "joyful":    {"label": "Joyful",    "ex": 0.75, "pace": 1.03, "tag": "[happily]",     "az": "cheerful", "range": 1.25},
+    "excited":   {"label": "Excited",   "ex": 0.85, "pace": 1.06, "tag": "[excited]",     "az": "excited", "range": 1.35},
+    "serious":   {"label": "Serious",   "ex": 0.40, "pace": 0.97, "tag": "[seriously]",   "az": "serious", "range": 0.92},
+    "sad":       {"label": "Sad",       "ex": 0.55, "pace": 0.92, "tag": "[sorrowful]",   "az": "sad", "range": 0.85},
+    "urgent":    {"label": "Urgent",    "ex": 0.80, "pace": 1.08, "tag": "[urgently]",    "az": "excited", "range": 1.2},
+    "whisper":   {"label": "Whisper",   "ex": 0.30, "pace": 0.92, "tag": "[whispers]",    "az": "whispering", "range": 0.8},
 }
 ORDER = list(EMOTIONS)
 
@@ -182,6 +182,18 @@ def azure_ssml(text: str, voice: str, lang_tag: str, emotion: str, intensity: fl
     return (f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
             f'xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="{lang_tag}">'
             f'<voice name="{voice}">{inner}</voice></speak>')
+
+
+OMNI_TAGS = {"joyful": "[laughter]", "sad": "[sigh]"}
+
+
+def omni_text(text: str, emotion: str, intensity: float) -> str:
+    """OmniVoice: delivery comes from the voice reference; strong joy/sadness get a natural non-verbal cue."""
+    t = shape_text(text, emotion)
+    tag = OMNI_TAGS.get(emotion or "")
+    if tag and intensity >= 0.8:
+        t = f"{tag} {t}"
+    return t
 
 
 def shape_text(text: str, emotion: str) -> str:

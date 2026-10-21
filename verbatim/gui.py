@@ -5,7 +5,7 @@
 
 Layout: header (logo, modules, updates) · left navigation · centre (drop zone + file table, or a page)
 · right panel (Settings / Speakers / Vocabulary / Output tabs + Start). Modules: 01 Transcribe and
-02 Voice Studio (gui_voice.py) are live; 03 Video Localise shows a "Coming soon" label only.
+02 Voice Studio (gui_voice.py) and 03 Music Studio (gui_music.py) are live; 04 Video Localise shows a "Coming soon" label.
 """
 from __future__ import annotations
 
@@ -543,6 +543,11 @@ class Window(QMainWindow):
         self.voice = VoiceStudio(self)                   # 6 — module 02
         self.voice.log.connect(self.say)
         self.pages.addWidget(self.voice)
+        from .gui_music import MusicStudio
+
+        self.music = MusicStudio(self)                   # 7 — module 03
+        self.music.log.connect(self.say)
+        self.pages.addWidget(self.music)
         body.addWidget(self.pages, 1)
         body.addWidget(self.right)
         outer.addLayout(body, 1)
@@ -630,7 +635,8 @@ class Window(QMainWindow):
     def _modules(self):
         row = QHBoxLayout()
         row.setSpacing(6)
-        mods = [("01", "TRANSCRIBE", True), ("02", "VOICE STUDIO", True), ("03", "VIDEO LOCALISE", False)]
+        mods = [("01", "TRANSCRIBE", True), ("02", "VOICE STUDIO", True), ("03", "MUSIC STUDIO", True),
+                ("04", "VIDEO LOCALISE", False)]
         self.mod_widgets = []
         for k, (num, name, live) in enumerate(mods):
             f = ModulePill(lambda k=k: self.select_module(k)) if live else QFrame()
@@ -667,15 +673,20 @@ class Window(QMainWindow):
         if k == 0:
             self.select_nav(0)
             return
-        self.module = 1
+        self.module = k
         self.paint_modules()
         self.nav_group.setExclusive(False)
         for b in self.nav_group.buttons():
             b.setChecked(False)
         self.nav_group.setExclusive(True)
         self.right.setVisible(False)
-        self.voice.refresh_sources()
-        self.pages.setCurrentIndex(6)
+        if k == 1:
+            self.voice.refresh_sources()
+            self.pages.setCurrentIndex(6)
+        else:
+            self.music.refresh_library()
+            self.music.fill_engines()
+            self.pages.setCurrentIndex(7)
 
     def send_to_voice(self, json_path: str):
         if json_path:
@@ -685,7 +696,7 @@ class Window(QMainWindow):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if hasattr(self, "subtitle"):
-            self.subtitle.setVisible(self.width() >= 1680)
+            self.subtitle.setVisible(self.width() >= 2000)
 
     def _banner(self):
         f = QFrame()

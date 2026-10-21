@@ -175,6 +175,11 @@ QPushButton#nav {{ background:transparent; border:0; border-radius:14px; text-al
 QPushButton#nav:hover {{ background:{t['hover']}; }}
 QPushButton#nav:checked {{ background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {t['nav_a']}, stop:1 {t['nav_b']}); color:{t['nav_ink']}; font-weight:600; }}
 QPushButton#pillBtn {{ border-radius:19px; padding:0 18px; min-height:40px; max-height:40px; font-weight:600; }}
+QSlider::groove:horizontal {{ height:4px; background:{t['track']}; border-radius:2px; }}
+QSlider::sub-page:horizontal {{ background:{t['accent']}; border-radius:2px; }}
+QSlider::handle:horizontal {{ background:{t['card']}; border:2px solid {t['accent']}; width:12px; height:12px;
+  margin:-6px 0; border-radius:8px; }}
+QPushButton#chip {{ border-radius:8px; padding:4px 6px; font-size:12px; }}
 QPushButton#pillBtn[accent="true"] {{ background:{t['accent']}; color:white; border-color:{t['accent']}; }}
 QPushButton#addFiles, QToolButton#addMenu {{ background:{t['dark_btn']}; color:{t['dark_btn_ink']}; border:0; font-size:14px; font-weight:600; }}
 QPushButton#addFiles {{ border-top-left-radius:20px; border-bottom-left-radius:20px; border-top-right-radius:0; border-bottom-right-radius:0; padding:0 26px 0 22px; min-height:42px; max-height:42px; }}

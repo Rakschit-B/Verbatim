@@ -91,7 +91,43 @@ def voices_for(lang: str, extended: bool = True) -> list[Voice]:
     vs = sorted(vs, key=lambda v: (v.engine != "st", v.gender != "female", v.id))
     if not extended:
         return vs
-    return custom_voices(lang) + expressive_voices(lang) + vs + cloud_voices(lang)
+    return custom_voices(lang) + expressive_voices(lang) + omni_voices(lang) + vs + cloud_voices(lang)
+
+
+# OmniVoice "voice design" presets — voices described by attributes, 600+ languages (no recording needed)
+OMNI_DESIGNS = [("f-warm", "Ira", "female", "female, young adult, moderate pitch"),
+                ("f-low", "Meera", "female", "female, middle-aged, low pitch"),
+                ("f-bright", "Tara", "female", "female, young adult, high pitch"),
+                ("f-elder", "Kamala", "female", "female, elderly, moderate pitch"),
+                ("f-whisper", "Noor", "female", "female, young adult, whisper"),
+                ("m-warm", "Aditya", "male", "male, young adult, moderate pitch"),
+                ("m-deep", "Raghav", "male", "male, middle-aged, very low pitch"),
+                ("m-bright", "Neil", "male", "male, young adult, high pitch"),
+                ("m-elder", "Prakash", "male", "male, elderly, low pitch"),
+                ("m-indian-en", "Arnav", "male", "male, middle-aged, low pitch, indian accent"),
+                ("f-indian-en", "Ananya", "female", "female, young adult, moderate pitch, indian accent"),
+                ("f-british", "Olivia", "female", "female, middle-aged, moderate pitch, british accent"),
+                ("m-british", "James", "male", "male, middle-aged, low pitch, british accent"),
+                ("m-american", "Ethan", "male", "male, young adult, moderate pitch, american accent")]
+OMNI_LANGS_NOTE = "600+ languages"
+
+
+def omni_installed() -> bool:
+    from .platform_info import models_dir
+
+    return (models_dir() / "omnivoice" / "model.safetensors").exists() and \
+        (models_dir() / "omnivoice" / "audio_tokenizer" / "model.safetensors").exists()
+
+
+def omni_voices(lang: str) -> list[Voice]:
+    if not omni_installed():
+        return []
+    out = []
+    for key, name, g, instruct in OMNI_DESIGNS:
+        if "accent" in instruct and lang != "en":
+            continue
+        out.append(Voice(f"ov:d:{key}", f"{name} · OmniVoice", g, instruct.split(", ", 1)[1], "ov", (lang,)))
+    return out
 
 
 def custom_voices(lang: str) -> list[Voice]:
@@ -347,6 +383,13 @@ class Synth:
         emo, inten = d.get("emotion", "neutral"), float(d.get("intensity", 0.5) or 0.5)
         pref = self.clone_engine
         ref, sr = voicelab.reference(cv)
+        if pref == "omnivoice" or (pref == "auto" and omni_installed() and lang not in tts_chatterbox.LANGS):
+            a = self._omni(text, lang, ref_wav=str(cv.ref_wav), ref_text=cv.ref_text, speed=speed, direction=d)
+            return a
+        if pref == "openvoice":   # expressive studio performance, re-voiced with this voice's tone colour
+            base = self.speak(text, lang, self.timbre_base(lang, cv.gender), speed, d)
+            return self._timbre(base, [str(cv.ref_wav)] + ([str(cv.folder / "full_voice.wav")]
+                                                           if (cv.folder / "full_voice.wav").exists() else []))
         if pref in ("auto", "chatterbox") and lang in tts_chatterbox.LANGS and \
                 (pref == "chatterbox" or tts_chatterbox.is_installed()):
             return self._chatterbox(text, lang, ref, sr, cv.id, d, speed)
@@ -371,6 +414,75 @@ class Synth:
             return resample(a, r)
         raise RuntimeError(f"To speak {lang} in “{cv.name}”, download the Expressive voice pack (Chatterbox) "
                            "in Settings › Voice engines, or clone it to ElevenLabs.")
+
+    # ------------------------------------------------------------ OmniVoice / OpenVoice (engine host)
+    def _host(self):
+        from .runtimes import EngineHost
+
+        return EngineHost.get("voice", self.progress)
+
+    def _omni(self, text, lang, ref_wav="", ref_text="", instruct="", speed=1.0, direction=None) -> np.ndarray:
+        import tempfile
+
+        from . import direction as dr
+        from .platform_info import models_dir
+        from .voicelab import read_wav
+
+        d = direction or {}
+        md = models_dir() / "omnivoice"
+        if not omni_installed():
+            from .download import hf_files
+
+            hf_files("k2-fsa/OmniVoice", md, self.progress)
+        out = Path(tempfile.mkdtemp()) / "omni.wav"
+        req = dict(model_dir=str(md), text=dr.omni_text(text, d.get("emotion", ""), float(d.get("intensity", 0.5) or 0.5)),
+                   out=str(out), num_step=32 if self.quality == "studio" else 16, speed=float(speed),
+                   seed=self.seed if self.seed is not None else -1, language=lang)
+        if ref_wav:
+            req.update(ref_wav=ref_wav, ref_text=ref_text)
+        elif instruct:
+            req["instruct"] = instruct
+        self._host().request("omnivoice", **req)
+        a, sr = read_wav(out)
+        a = resample(a, sr)
+        return self._expressive_finish(a, d)
+
+    def _expressive_finish(self, a: np.ndarray, d: dict) -> np.ndarray:
+        """Modulation: widen or calm the intonation to match the line's emotion and strength."""
+        from . import fx
+        from .direction import info
+
+        emo = d.get("emotion") or "neutral"
+        inten = float(d.get("intensity", 0.5) or 0.5)
+        factor = info(emo).get("range", 1.0) * (1 + (inten - 0.5) * 0.4)
+        if abs(factor - 1) >= 0.05:
+            a = fx.pitch_range(a, factor, SAMPLE_RATE)
+        return a
+
+    def timbre_base(self, lang: str, gender: str) -> str:
+        from . import tts_chatterbox
+
+        if tts_chatterbox.is_installed() and lang in tts_chatterbox.LANGS:
+            return "cb:st:6" if gender == "male" else "cb:st:1"
+        return "st:6" if gender == "male" else "st:1"
+
+    def _timbre(self, a: np.ndarray, target_wavs: list[str], tau: float = 0.3) -> np.ndarray:
+        import tempfile
+
+        from .platform_info import models_dir
+        from .voicelab import read_wav, write_wav
+
+        md = models_dir() / "openvoice"
+        if not (md / "converter" / "checkpoint.pth").exists():
+            from .download import hf_files
+
+            hf_files("myshell-ai/OpenVoiceV2", md, self.progress, exclude=r"\.DS_Store")
+        tmp = Path(tempfile.mkdtemp())
+        write_wav(tmp / "src.wav", a, SAMPLE_RATE)
+        self._host().request("openvoice_convert", ckpt_dir=str(md), src_wav=str(tmp / "src.wav"),
+                             tgt_wavs=target_wavs, out=str(tmp / "out.wav"), tau=tau)
+        b, sr = read_wav(tmp / "out.wav")
+        return resample(b, sr)
 
     def _chatterbox(self, text, lang, ref, sr, key, d, speed):
         from . import direction as dr
@@ -411,6 +523,11 @@ class Synth:
                 ref, sr = self.studio_reference(sid)
                 return self._chatterbox(text, lang, ref, sr, vid, d, speed)
             vid = vid[3:]
+        if vid.startswith("ov:"):
+            instruct = ""
+            if vid.startswith("ov:d:"):
+                instruct = next((i for k, _, _, i in OMNI_DESIGNS if k == vid[5:]), "")
+            return self._omni(text, lang, instruct=instruct, speed=speed, direction=d)
         if vid.startswith("az:"):
             from . import direction as dr
             from . import tts_cloud
@@ -455,32 +572,32 @@ class Synth:
         return resample(np.asarray(audio.samples, dtype=np.float32), audio.sample_rate)
 
 
-def time_stretch(a: np.ndarray, rate: float) -> np.ndarray:
-    """Change tempo without changing pitch (WSOLA-style overlap-add). rate > 1 = faster."""
-    if len(a) < 2048 or abs(rate - 1) < 0.01:
-        return a
-    win, hop_out = 1024, 256
+def time_stretch(a: np.ndarray, rate: float, sr: int = SAMPLE_RATE) -> np.ndarray:
+    """Change tempo without changing pitch (WSOLA). rate > 1 = faster. The similarity search spans more than
+    one pitch period of the lowest voice (60 Hz), so grains always join in phase."""
+    if len(a) < 4096 or abs(rate - 1) < 0.01:
+        return a.astype(np.float32)
+    win = int(0.04 * sr) // 2 * 2            # 40 ms grains
+    hop_out = win // 4
     hop_in = hop_out * rate
+    tol = int(sr / 60)                       # one period at 60 Hz
     w = np.hanning(win).astype(np.float32)
     n_out = int(len(a) / rate) + win
     out = np.zeros(n_out, dtype=np.float32)
     norm = np.zeros(n_out, dtype=np.float32)
+    x = np.pad(a.astype(np.float32), (tol, tol + win))
     pos_in, pos_out, prev = 0.0, 0, None
-    tol = 128
-    while int(pos_in) + win + tol < len(a) and pos_out + win < n_out:
-        c = int(pos_in)
-        if prev is not None:   # pick the offset that best continues the previous grain
-            seg = a[max(0, c - tol): c + tol + win]
-            best, score = c, -1e9
-            for k in range(0, len(seg) - win, 16):
-                sc = float(np.dot(seg[k:k + hop_out], prev))
-                if sc > score:
-                    best, score = max(0, c - tol) + k, sc
-            c = best
-        g = a[c:c + win]
+    while int(pos_in) + win < len(a) and pos_out + win < n_out:
+        c = int(pos_in) + tol                # index into padded x
+        if prev is not None:
+            seg = x[c - tol: c + tol + hop_out]
+            cc = np.correlate(seg, prev, "valid")
+            en = np.sqrt(np.convolve(seg ** 2, np.ones(hop_out, dtype=np.float32), "valid")) + 1e-9
+            c = c - tol + int(np.argmax(cc / en))
+        g = x[c:c + win]
         out[pos_out:pos_out + win] += g * w
         norm[pos_out:pos_out + win] += w
-        prev = a[c + hop_out:c + 2 * hop_out] if c + 2 * hop_out <= len(a) else None
+        prev = x[c + hop_out:c + 2 * hop_out]
         pos_in += hop_in
         pos_out += hop_out
     norm[norm < 1e-3] = 1.0

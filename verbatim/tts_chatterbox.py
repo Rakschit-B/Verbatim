@@ -262,3 +262,38 @@ class Chatterbox:
             p[p < p.max() * min_p] = 0.0
             p /= p.sum()
         return int(rng.choice(len(p), p=p))
+
+
+# ---------------------------------------------------------------- voice changer (speech-to-speech)
+def voice_convert(src: np.ndarray, src_sr: int, target_ref: np.ndarray, target_sr: int, target_key: str = "",
+                  chunk_s: float = 8.0, progress=None) -> np.ndarray:
+    """Re-speak a recorded performance in another voice — keeps the words, timing, pitch movement and emotion of
+    the performance (Chatterbox S3 speech tokens → target speaker decoder). Returns 24 kHz audio."""
+    from .tts import resample
+
+    cb = Chatterbox.get(progress)
+    _, _, x_vec, feat = cb.conditioning(target_ref, target_sr, target_key)
+    t_tok = cb.conditioning(target_ref, target_sr, target_key)[1]
+    a = resample(np.asarray(src, dtype=np.float32), src_sr, SR)
+    C, O = int(chunk_s * SR), int(0.25 * SR)
+    out, pos = [], 0
+    n = len(a)
+    with cb.run_lock:
+        while pos < n:
+            piece = a[pos:pos + C]
+            _, s_tok, _, _ = cb.enc.run(None, {"audio_values": piece[None, :].astype(np.float32)})
+            toks = np.concatenate([t_tok, s_tok.astype(t_tok.dtype)], axis=1)
+            w = np.squeeze(cb.dec.run(None, {"speech_tokens": toks, "speaker_embeddings": x_vec,
+                                             "speaker_features": feat})[0]).astype(np.float32)
+            out.append(w)
+            if progress:
+                progress(min(1.0, (pos + C) / n), "Re-voicing your performance…")
+            pos += C
+    if not out:
+        return np.zeros(0, dtype=np.float32)
+    y = out[0]
+    for w in out[1:]:
+        k = min(O, len(y), len(w))
+        ramp = np.linspace(0, 1, k, dtype=np.float32)
+        y = np.concatenate([y[:-k], y[-k:] * (1 - ramp) + w[:k] * ramp, w[k:]]) if k else np.concatenate([y, w])
+    return y

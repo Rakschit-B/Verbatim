@@ -466,3 +466,36 @@ def run_diagnostics(out_dir: str | Path, progress=None) -> Path:
     if progress:
         progress(1.0, "Diagnostics finished")
     return rep
+
+
+# ---------------------------------------------------------------- voice changer
+def revoice(src_path: str, voice_id: str, method: str, out_dir: str | Path, progress=None) -> Path:
+    """Perform-it-yourself: keep the performance of `src_path`, change the voice to `voice_id`."""
+    from . import tts, tts_chatterbox
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    a = decode(src_path, 44100, 1)[:, 0]
+    synth = tts.Synth(progress=progress)
+    if voice_id.startswith("my:"):
+        cv = get(voice_id)
+        refs = [str(cv.ref_wav)] + ([str(cv.folder / "full_voice.wav")] if (cv.folder / "full_voice.wav").exists() else [])
+        ref, rsr = reference(cv)
+        name = cv.name
+    else:   # a studio voice: its own reading of the reference passage is the target
+        sid = int(voice_id.split(":")[-1])
+        ref, rsr = synth.studio_reference(sid)
+        import tempfile
+
+        p = Path(tempfile.mkdtemp()) / "ref.wav"
+        write_wav(p, ref, rsr)
+        refs, name = [str(p)], voice_id
+    if method == "openvoice":
+        y = synth._timbre(resample(a, 44100, tts.SAMPLE_RATE), refs)
+        sr = tts.SAMPLE_RATE
+    else:
+        y = tts_chatterbox.voice_convert(a, 44100, ref, rsr, target_key=voice_id, progress=progress)
+        sr = tts_chatterbox.SR
+    dst = out_dir / f"{Path(src_path).stem} — as {slugify(name)}.wav"
+    write_wav(dst, y / max(1e-6, float(abs(y).max())) * 0.9, sr)
+    return dst

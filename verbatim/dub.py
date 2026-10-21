@@ -51,6 +51,7 @@ class Line:
     emotion: str = ""        # performance direction (direction.py): neutral, warm, inspiring, …
     intensity: float = 0.5   # 0.3 subtle · 0.5 natural · 0.8 strong
     emphasis: str = ""       # words to stress, comma-separated
+    take: int = 0            # re-take counter: a new take = a new performance of the same line
 
 
 @dataclass
@@ -70,6 +71,7 @@ class VoiceJob:
     eleven_model: str = "eleven_v3"
     music: dict = field(default_factory=dict)      # music bed settings (music.py): file, mode, level…
     keep_background: bool = False                  # dubbing: keep original music & effects, remove original voice
+    fx_preset: str = ""                            # voice finishing preset (fx.PRESETS)
     sequential: bool = False                       # script voiceover: lines follow each other (no video timing)
     paragraph_ends: list = field(default_factory=list)   # script jobs: line indexes that end a paragraph
     duration: float = 0.0
@@ -314,13 +316,13 @@ def render(job: VoiceJob, synth, progress=None, mix: bool = True, video: bool = 
         dirn = {"emotion": ln.emotion or "neutral", "intensity": ln.intensity, "emphasis": ln.emphasis}
         base = job.speed * (ln.pace or 1.0) * (_emo(ln.emotion)["pace"] if ln.emotion else 1.0)
         speed = base
-        a = _trim(synth.speak(ln.text, job.tgt_lang, sid, speed, dirn))
+        a = _trim(_speak_cached(job, synth, ln, sid, speed, dirn))
         need = len(a) / SR
         for _ in range(3):  # speed up until it fits (speech rate is not exactly proportional to the setting)
             if need <= slot or slot <= 0.3 or speed >= base * MAX_SPEEDUP - 1e-3:
                 break
             speed = min(base * MAX_SPEEDUP, speed * need / slot * 1.04)
-            a = _trim(synth.speak(ln.text, job.tgt_lang, sid, speed, dirn))
+            a = _trim(_speak_cached(job, synth, ln, sid, speed, dirn))
             need = len(a) / SR
         if job.sequential:
             ln.start, ln.end = round(start, 3), round(start + need, 3)
@@ -340,6 +342,11 @@ def render(job: VoiceJob, synth, progress=None, mix: bool = True, video: bool = 
             track = np.concatenate([track, np.zeros(i0 + len(a) - len(track) + SR, dtype=np.float32)])
         track[i0:i0 + len(a)] += a
         prev_end = start + need
+    if job.fx_preset:
+        from .fx import PRESETS, apply
+
+        n0 = len(track)
+        track = apply(track, PRESETS.get(job.fx_preset, []), SR)[:max(n0, len(track))]
     end = int(prev_end * SR) + int(0.5 * SR) if job.sequential else max(int(dur * SR), int(prev_end * SR) + int(0.5 * SR))
     if job.sequential:
         job.duration = prev_end + 0.5
@@ -355,6 +362,37 @@ def render(job: VoiceJob, synth, progress=None, mix: bool = True, video: bool = 
     if progress:
         progress(1.0, "Voiceover ready")
     return outs
+
+
+def _speak_cached(job: VoiceJob, synth, ln: Line, sid, speed: float, dirn: dict) -> np.ndarray:
+    """Every spoken line is cached by everything that shapes it, so re-generating only re-voices what changed —
+    and a re-take (ln.take + 1) gives a fresh performance of one line."""
+    import hashlib
+
+    key = json.dumps([ln.text, job.tgt_lang, str(sid), round(float(speed), 3), dirn, job.quality, job.clone_engine,
+                      job.eleven_model, ln.take], ensure_ascii=False, sort_keys=True)
+    h = hashlib.sha1(key.encode()).hexdigest()[:16]
+    cache = job.path.parent / ".takes" / job.stem
+    f = cache / f"{h}.npy"
+    if f.exists():
+        try:
+            return np.load(f)
+        except (OSError, ValueError):
+            pass
+    old = getattr(synth, "seed", None)
+    if ln.take and old is not None:
+        synth.seed = int(old) + 1000 * ln.take
+    try:
+        a = synth.speak(ln.text, job.tgt_lang, sid, speed, dirn)
+    finally:
+        if ln.take and old is not None:
+            synth.seed = old
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+        np.save(f, np.asarray(a, dtype=np.float32))
+    except OSError:
+        pass
+    return a
 
 
 def _write_wav(path: Path, a: np.ndarray, sr: int = SR):

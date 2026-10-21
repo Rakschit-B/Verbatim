@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS errors(batch_id INT, source_name TEXT, source_path TE
 CREATE TABLE IF NOT EXISTS voice_jobs(id INTEGER PRIMARY KEY, time TEXT, source_name TEXT, transcript_json TEXT,
   src_lang TEXT, tgt_lang TEXT, engine TEXT, model TEXT, voices TEXT, lines INT, edited INT, faster INT, too_long INT,
   voice_wav TEXT, video TEXT, srt TEXT);
+CREATE TABLE IF NOT EXISTS music(id INTEGER PRIMARY KEY, time TEXT, title TEXT, take INT, seed INT, bpm TEXT,
+  musical_key TEXT, seconds REAL, style TEXT, mode TEXT, wav TEXT, mp3 TEXT, with_voice TEXT);
 CREATE INDEX IF NOT EXISTS ix_files_sig ON files(signature, settings_fp);
 CREATE INDEX IF NOT EXISTS ix_seg_file ON segments(file_id);
 """
@@ -163,6 +165,17 @@ class MasterLog:
         except Exception:
             pass
 
+    def record_music(self, items: list) -> None:
+        for it in items:
+            f, r = it.get("files", {}), it.get("request", {})
+            self.db.execute("INSERT INTO music(time, title, take, seed, bpm, musical_key, seconds, style, mode, wav, mp3, "
+                            "with_voice) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (it.get("created"), it.get("title"), it.get("take"), it.get("seed"), str(it.get("bpm") or ""),
+                             it.get("key") or "", f.get("seconds"), (r.get("style") or r.get("description") or "")[:300],
+                             r.get("mode"), f.get("wav"), f.get("mp3", ""), f.get("with_voice", "")))
+        self.db.commit()
+        self.export_excel()
+
     def export_excel(self) -> Path:
         from openpyxl import Workbook
         from openpyxl.formatting.rule import CellIsRule
@@ -278,6 +291,12 @@ class MasterLog:
                                    "Lines", "Edited lines", "Sped up", "Too long", "Voiceover WAV", "Dubbed video",
                                    "Subtitles"], [list(r) for r in vj],
                   {"Original file name": 34, "Voices": 30, "Voiceover WAV": 50, "Dubbed video": 50, "Subtitles": 50})
+        mu = list(db.execute("SELECT time, title, take, seed, bpm, musical_key, seconds, style, mode, wav, mp3, with_voice "
+                             "FROM music ORDER BY id"))
+        if mu:
+            sheet("Music Studio", ["Time", "Title", "Take", "Seed", "BPM", "Key", "Seconds", "Style", "Mode", "WAV", "MP3",
+                                   "With voiceover"], [list(r) for r in mu],
+                  {"Title": 30, "Style": 60, "WAV": 50, "MP3": 50, "With voiceover": 50})
         try:
             from .consent import ConsentRegister
 
@@ -295,7 +314,7 @@ class MasterLog:
         # ---------- Dashboard (live formulas over the Files sheet) ----------
         dash["A1"] = "VERBATIM — Master Transcription Log"
         dash["A1"].font = Font(size=18, bold=True, color=HEAD)
-        dash["A2"] = f"Infinite Story · regenerated {datetime.now():%d %b %Y %H:%M} · ledger: .verbatim/ledger.sqlite"
+        dash["A2"] = f"Infinite Story LLP · regenerated {datetime.now():%d %b %Y %H:%M} · ledger: .verbatim/ledger.sqlite"
         dash["A2"].font = Font(italic=True, color="777777")
         last = max(2, ws_files.max_row)
         F = lambda col: f"Files!{col}2:{col}{last}"  # noqa: E731

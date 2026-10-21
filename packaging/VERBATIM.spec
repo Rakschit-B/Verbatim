@@ -13,6 +13,8 @@ IS_MAC = sys.platform == "darwin"
 datas = [(str(ROOT / "assets"), "assets")]
 if (ROOT / "bundled_models").exists():  # e.g. bundled_models/sherpa/<parakeet folder> -> ships inside the app
     datas.append((str(ROOT / "bundled_models"), "models"))
+if (ROOT / "engine_host").exists():     # PyTorch engines run from here inside their own runtime (3.5)
+    datas.append((str(ROOT / "engine_host"), "engine_host"))
 if (ROOT / "llama.cpp").exists():       # llama-server for offline translation (3.4: shipped inside the app)
     datas.append((str(ROOT / "llama.cpp"), "llama.cpp"))
 for _doc in ("LICENSE", "THIRD_PARTY_NOTICES.md"):

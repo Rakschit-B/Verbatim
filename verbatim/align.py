@@ -14,6 +14,7 @@ keep their original times, interpolated between aligned neighbours.
 from __future__ import annotations
 
 import os
+import re
 import unicodedata
 from pathlib import Path
 
@@ -251,3 +252,57 @@ def _interpolate(words: list[Word], fixed: set[int]):
                 words[k].start = round(left + (k - i) * step, 3)
                 words[k].end = round(left + (k - i + 1) * step, 3)
         i = j
+
+
+# ---------------------------------------------------------------- helpers for the voice scorecard
+def word_spans(audio16k: np.ndarray, text: str, lang: str = "") -> list[tuple[str, float, float]]:
+    """(word, start, end) for every word of `text` in a short clip (forced alignment)."""
+    from .model import Segment, Transcript, Word
+
+    words = [Word(w, 0.0, 0.0) for w in text.split()]
+    dur = len(audio16k) / 16000
+    for k, w in enumerate(words):                      # even spread as the starting guess
+        w.start, w.end = dur * k / max(1, len(words)), dur * (k + 1) / max(1, len(words))
+    t = Transcript([Segment(0.0, dur, text, words)], lang or "auto", "align", "")
+    Aligner().align(audio16k.astype(np.float32), t)
+    return [(w.text, w.start, w.end) for w in t.segments[0].words]
+
+
+def recognise(audio16k: np.ndarray, lang: str = "") -> str:
+    """Greedy CTC transcription with the Omnilingual model — an independent check for any language."""
+    al = Aligner()
+    inv = {v: k for k, v in (al._vocab or {}).items()}
+    allowed = _script_mask(inv, lang)
+    out, prev = [], -1
+    for s in range(0, len(audio16k), 16000 * 20):
+        lp = al.log_probs(audio16k[s:s + 16000 * 20])
+        if allowed is not None:
+            lp = np.where(allowed[None, :lp.shape[1]], lp, -1e9)
+        for i in lp.argmax(-1):
+            if i != prev and i > 4:
+                out.append(inv.get(int(i), ""))
+            elif i != prev and i == SPACE:
+                out.append(" ")
+            prev = i
+        out.append(" ")
+    return re.sub(r"\s+", " ", "".join(out).replace("|", " ")).strip()
+
+
+SCRIPTS = {"hi": (0x0900, 0x097F), "mr": (0x0900, 0x097F), "ne": (0x0900, 0x097F), "bn": (0x0980, 0x09FF),
+           "ta": (0x0B80, 0x0BFF), "te": (0x0C00, 0x0C7F), "gu": (0x0A80, 0x0AFF), "pa": (0x0A00, 0x0A7F),
+           "ar": (0x0600, 0x06FF), "ur": (0x0600, 0x06FF), "he": (0x0590, 0x05FF), "ru": (0x0400, 0x04FF),
+           "uk": (0x0400, 0x04FF), "el": (0x0370, 0x03FF), "en": (0x0041, 0x024F), "es": (0x0041, 0x024F),
+           "fr": (0x0041, 0x024F), "de": (0x0041, 0x024F), "it": (0x0041, 0x024F), "pt": (0x0041, 0x024F)}
+
+
+def _script_mask(inv: dict, lang: str):
+    """Keep the recogniser in the language's own script (the omnilingual model cannot be told the language)."""
+    rng = SCRIPTS.get(lang)
+    if not rng:
+        return None
+    n = max(inv) + 1
+    m = np.zeros(n, dtype=bool)
+    for i, tok in inv.items():
+        if i <= 4 or (tok and all(rng[0] <= ord(c) <= rng[1] or not c.isalpha() for c in tok)):
+            m[i] = True
+    return m

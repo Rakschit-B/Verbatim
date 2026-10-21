@@ -71,3 +71,42 @@ def hf_snapshot(repo_id: str, target: Path, progress: Progress | None = None, la
         return Path(path)
     except Exception:
         return None
+
+
+def hf_files(repo_id: str, dest: Path, progress: Progress | None = None, exclude: str = "",
+             endpoint: str = "https://huggingface.co") -> Path:
+    """Download every file of a Hugging Face model repo (resumable, one file at a time, no extra libraries).
+    `exclude` is a regex of paths to skip. Already-complete files are kept."""
+    import json
+    import re
+    import urllib.request
+
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    listing = dest / ".hf_listing.json"
+    try:
+        req = urllib.request.Request(f"{endpoint}/api/models/{repo_id}/tree/main?recursive=true",
+                                     headers={"User-Agent": "VERBATIM"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            files = [f for f in json.loads(r.read()) if f.get("type") == "file"]
+        listing.write_text(json.dumps(files))
+    except Exception:
+        if not listing.exists():
+            raise
+        files = json.loads(listing.read_text())
+    if exclude:
+        files = [f for f in files if not re.search(exclude, f["path"])]
+    total = sum(int(f.get("size") or 0) for f in files) or 1
+    done = 0
+    for f in files:
+        p = dest / f["path"]
+        size = int(f.get("size") or 0)
+        if not (p.exists() and (not size or p.stat().st_size == size)):
+            def cb(frac, msg, done=done, size=size):
+                if progress:
+                    progress((done + frac * size) / total, f"Downloading {repo_id.split('/')[-1]}: {f['path']} — {msg}")
+            fetch(f"{endpoint}/{repo_id}/resolve/main/{f['path']}", p, cb, f["path"])
+        done += size
+    if progress:
+        progress(1.0, f"{repo_id} ready")
+    return dest

@@ -182,6 +182,8 @@ class VoiceStudio(QWidget):
         self.table.setColumnWidth(6, 170)
         self.table.setColumnHidden(4, True)
         self.table.cellDoubleClicked.connect(self.on_cell_double)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.line_menu)
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(True)
         self.table.setShowGrid(False)
@@ -332,11 +334,26 @@ class VoiceStudio(QWidget):
         self.clone_engine = QComboBox()
         self.clone_engine.addItem("Best available (offline first)", "auto")
         self.clone_engine.addItem("Chatterbox — expressive, 23 languages", "chatterbox")
+        self.clone_engine.addItem("OmniVoice — 600+ languages, closest clone", "omnivoice")
+        self.clone_engine.addItem("Studio performance + your tone (OpenVoice)", "openvoice")
         self.clone_engine.addItem("ZipVoice — English, fast", "zipvoice")
         self.clone_engine.addItem("ElevenLabs — cloud clone", "elevenlabs")
         self.clone_engine.setMinimumContentsLength(10)
         self.clone_engine.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         row.addWidget(self.clone_engine, 1)
+        v.addLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(_label("Finish", "sub"))
+        from .fx import PRESETS
+
+        self.fx_preset = QComboBox()
+        self.fx_preset.addItem("Clean (no effects)", "")
+        for name in PRESETS:
+            self.fx_preset.addItem(name, name)
+        self.fx_preset.setToolTip("Studio finishing: EQ, de-esser, compression, loudness — or a creative effect.")
+        self.fx_preset.setMinimumContentsLength(10)
+        self.fx_preset.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        row.addWidget(self.fx_preset, 1)
         v.addLayout(row)
         hl = QFrame()
         hl.setObjectName("hline")
@@ -475,6 +492,7 @@ class VoiceStudio(QWidget):
     def _restore_job_ui(self):
         j = self.job
         self.clone_engine.setCurrentIndex(max(0, self.clone_engine.findData(j.clone_engine)))
+        self.fx_preset.setCurrentIndex(max(0, self.fx_preset.findData(j.fx_preset or "")))
         self.music_file.setText(j.music.get("file", ""))
         self.music_mode.setCurrentIndex(max(0, self.music_mode.findData(j.music.get("mode", "follow"))))
         self.music_level.setCurrentIndex(max(0, self.music_level.findData(float(j.music.get("duck_db", -20.0)))))
@@ -799,6 +817,7 @@ class VoiceStudio(QWidget):
         self.job.speed = (0.9, 1.0, 1.1)[self.pace.currentIndex()]
         self.job.quality = self.quality.currentData()
         self.job.clone_engine = self.clone_engine.currentData()
+        self.job.fx_preset = self.fx_preset.currentData() or ""
         self.job.keep_background = self.keep_bg.isChecked()
         mf = self.music_file.text().strip()
         self.job.music = {"file": mf, "mode": self.music_mode.currentData(),
@@ -881,6 +900,52 @@ class VoiceStudio(QWidget):
             ln.fit = ""
             self.job.save()
             self.fill()
+
+    def line_menu(self, pos):
+        from PySide6.QtWidgets import QMenu
+
+        row = self.table.rowAt(pos.y())
+        if row < 0 or not self.job:
+            return
+        ln = self.job.lines[row]
+        m = QMenu(self)
+        a_play = m.addAction("▶  Hear this line")
+        a_take = m.addAction("↻  New take of this line")
+        a_dir = m.addAction("Direct this line…")
+        act = m.exec(self.table.viewport().mapToGlobal(pos))
+        if act is a_take:
+            ln.take += 1
+            ln.fit = ""
+            self.job.save()
+            self.preview_line(row)
+        elif act is a_play:
+            self.preview_line(row)
+        elif act is a_dir:
+            self.on_cell_double(row, 6)
+
+    def preview_line(self, row: int):
+        ln = self.job.lines[row]
+        if not ln.text.strip():
+            return
+        sid = self.job.voices.get(ln.speaker) or ""
+        if ln.voice:
+            sid = ln.voice
+        job = self.job
+
+        def work(progress):
+            import numpy as np
+
+            from .dub import _speak_cached, _write_wav
+            from .tts import Synth
+
+            dirn = {"emotion": ln.emotion or "neutral", "intensity": ln.intensity, "emphasis": ln.emphasis}
+            synth = Synth(progress=progress, quality=job.quality, clone_engine=job.clone_engine)
+            a = _speak_cached(job, synth, ln, sid, job.speed * (ln.pace or 1.0), dirn)
+            tmp = Path(tempfile.gettempdir()) / "verbatim_line_preview.wav"
+            _write_wav(tmp, a if len(a) else np.zeros(1000, dtype=np.float32))
+            return tmp
+
+        self.run(work, self.on_preview, f"Voicing line {row + 1}…")
 
     def do_direct(self):
         if not self.job or not any(ln.text.strip() for ln in self.job.lines):
@@ -986,6 +1051,12 @@ class VoiceStudio(QWidget):
         self.w.icons.set(b, "mic2", "ink", 15)
         b.clicked.connect(self.create_voice)
         row.addWidget(b)
+        b = QPushButton("  Re-voice a recording…")
+        self.w.icons.set(b, "wave", "ink", 15)
+        b.setToolTip("Perform a line yourself (or use any recording) and hear it in another voice — your timing, "
+                     "pitch and emotion are kept.")
+        b.clicked.connect(self.revoice)
+        row.addWidget(b)
         for text, fn in (("Play sample", self.play_lab), ("Import voices…", self.import_voices),
                          ("Export…", self.export_voices), ("Clone to ElevenLabs", self.clone_eleven),
                          ("Delete", self.delete_voice)):
@@ -1060,12 +1131,24 @@ class VoiceStudio(QWidget):
                 it.widget().deleteLater()
         packs = [("cb", "Expressive voices — Chatterbox (emotion, 23 languages incl. Hindi & Hebrew, speaks your "
                         "custom voices)", tts_chatterbox.SIZE_MB),
+                 ("ov", "OmniVoice — closest voice cloning and voice design, 600+ languages", 3300),
+                 ("op", "OpenVoice V2 — keeps a performance, swaps the voice's tone colour", 150),
                  ("zv", "ZipVoice — fast English voice cloning", tts.ENGINES["zv"]["size_mb"]),
                  ("st", "Studio voices — Supertonic (10 voices × 31 languages)", tts.ENGINES["st"]["size_mb"]),
                  ("ko", "Kokoro — Chinese and extra English voices", tts.ENGINES["ko"]["size_mb"])]
+        from . import runtimes
+        from .platform_info import models_dir
+
+        def installed(key):
+            if key == "ov":
+                return tts.omni_installed() and runtimes.is_ready("voice")
+            if key == "op":
+                return (models_dir() / "openvoice" / "converter" / "checkpoint.pth").exists() and runtimes.is_ready("voice")
+            return tts.is_installed(key)
+
         for key, text, mb in packs:
             row = QHBoxLayout()
-            ok = tts.is_installed(key)
+            ok = installed(key)
             row.addWidget(_label(("✓  " if ok else "○  ") + text, "sub" if ok else "hint", wrap=True), 1)
             if not ok:
                 b = QPushButton(f"Download ({mb / 1000:.1f} GB)" if mb >= 1000 else f"Download ({mb} MB)")
@@ -1076,9 +1159,19 @@ class VoiceStudio(QWidget):
 
     def download_pack(self, key: str):
         def work(progress):
-            from . import tts
+            from . import runtimes, tts
+            from .download import hf_files
+            from .platform_info import models_dir
 
-            tts.ensure(key, progress)
+            if key in ("ov", "op"):
+                runtimes.ensure("voice", lambda f, m: progress(0.4 * f, m))
+                if key == "ov":
+                    hf_files("k2-fsa/OmniVoice", models_dir() / "omnivoice", lambda f, m: progress(0.4 + 0.6 * f, m))
+                else:
+                    hf_files("myshell-ai/OpenVoiceV2", models_dir() / "openvoice",
+                             lambda f, m: progress(0.4 + 0.6 * f, m), exclude=r"\.DS_Store")
+            else:
+                tts.ensure(key, progress)
             return key
 
         self.run(work, self.on_pack, "Downloading voice engine (one time)…")
@@ -1216,6 +1309,55 @@ class VoiceStudio(QWidget):
 
         self.run(work, lambda c, e: (self.busy(False), e and QMessageBox.warning(self, "Clone failed", e),
                                      self.load_lab()), "Uploading to ElevenLabs…")
+
+    def revoice(self):
+        """Voice changer: a recording in → the same performance in another voice out."""
+        from .tts import voices_for
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Re-voice a recording")
+        dlg.resize(560, 260)
+        f = QFormLayout(dlg)
+        path = QLineEdit()
+        path.setReadOnly(True)
+        pick = QPushButton("Choose…")
+        pr = QHBoxLayout()
+        pr.addWidget(path, 1)
+        pr.addWidget(pick)
+        pick.clicked.connect(lambda: path.setText(QFileDialog.getOpenFileName(
+            dlg, "Your performance", str(Path.home()), "Audio or video (*.wav *.mp3 *.m4a *.aac *.flac *.mp4 *.mov)")[0]
+            or path.text()))
+        target = QComboBox()
+        for v in voices_for("en"):
+            if v.engine in ("my", "st", "cb"):
+                target.addItem(v.label, v.id)
+        engine = QComboBox()
+        engine.addItem("Chatterbox voice changer (23 languages)", "chatterbox")
+        engine.addItem("OpenVoice tone colour (keeps every nuance)", "openvoice")
+        f.addRow("Performance", pr)
+        f.addRow("New voice", target)
+        f.addRow("Method", engine)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel, ok = QPushButton("Cancel"), QPushButton("Re-voice")
+        cancel.clicked.connect(dlg.reject)
+        ok.clicked.connect(dlg.accept)
+        btns.addWidget(cancel)
+        btns.addWidget(ok)
+        f.addRow(btns)
+        if dlg.exec() != QDialog.Accepted or not path.text():
+            return
+        src, vid, how = path.text(), target.currentData(), engine.currentData()
+        out_dir = Path(self.w.s.output_dir) / "Voice Studio" / "Re-voiced"
+
+        def work(progress):
+            from .voicelab import revoice
+
+            return revoice(src, vid, how, out_dir, progress)
+
+        self.run(work, lambda p, err: (self.busy(False), QMessageBox.warning(self, "Re-voice failed", err) if err
+                                       else (self.status.setText(f"Re-voiced: {Path(p).name}"), _open(Path(p).parent))),
+                 "Re-voicing your performance…")
 
     def import_voices(self):
         import getpass
