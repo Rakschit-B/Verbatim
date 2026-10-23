@@ -27,12 +27,17 @@ if not IS_MAC:
     import importlib.util
 
     _pyside = Path(importlib.util.find_spec("PySide6").origin).parent
-    for _sub in ("platforms", "imageformats", "iconengines", "styles"):
+    for _dll in list(_pyside.glob("av*.dll")) + list(_pyside.glob("sw*.dll")) + \
+            [p for p in (_pyside / "Qt6Multimedia.dll", _pyside / "Qt6MultimediaWidgets.dll", _pyside / "Qt6Network.dll")
+             if p.exists()]:
+        binaries.append((str(_dll), "PySide6"))
+    for _sub in ("platforms", "imageformats", "iconengines", "styles", "multimedia"):
         if (_pyside / "plugins" / _sub).is_dir():
             datas.append((str(_pyside / "plugins" / _sub), f"PySide6/plugins/{_sub}"))
-hidden = ["keyring.backends.macOS", "keyring.backends.Windows", "winsound", "wave", "tiktoken_ext.openai_public", "tiktoken_ext"]
+hidden = ["keyring.backends.macOS", "keyring.backends.Windows", "winsound", "wave", "tiktoken_ext.openai_public", "tiktoken_ext",
+          "PySide6.QtMultimedia", "PySide6.QtMultimediaWidgets", "PySide6.QtNetwork", "cv2"]
 
-for pkg in ["sherpa_onnx", "onnxruntime", "imageio_ffmpeg", "docx", "openpyxl"]:
+for pkg in ["sherpa_onnx", "onnxruntime", "imageio_ffmpeg", "docx", "openpyxl", "cv2"]:
     d, b, h = collect_all(pkg)
     datas += d; binaries += b; hidden += h
 for pkg in (["mlx", "mlx_whisper", "tiktoken"] if IS_MAC else ["faster_whisper", "ctranslate2", "tokenizers", "sentencepiece"]):

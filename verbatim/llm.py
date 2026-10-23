@@ -37,6 +37,10 @@ MODELS = {
                            "files": [
         ("mradermacher/translategemma-12b-it-GGUF", "translategemma-12b-it.Q4_K_M.gguf"),
         ("bartowski/google_translategemma-12b-it-GGUF", "google_translategemma-12b-it-Q4_K_M.gguf")]},
+    "gemma-3-4b": {"label": "Gemma 3 4B — offline writer for lyrics (2.5 GB)", "size_mb": 2490, "ram_gb": 8, "files": [
+        ("bartowski/google_gemma-3-4b-it-GGUF", "google_gemma-3-4b-it-Q4_K_M.gguf"),
+        ("unsloth/gemma-3-4b-it-GGUF", "gemma-3-4b-it-Q4_K_M.gguf"),
+        ("lmstudio-community/gemma-3-4b-it-GGUF", "gemma-3-4b-it-Q4_K_M.gguf")]},
 }
 
 
@@ -187,9 +191,12 @@ class LlamaServer:
                 time.sleep(0.5)
         raise RuntimeError("The translation engine did not start in time")
 
-    def complete(self, prompt: str, n_predict: int = 512, stop=("<end_of_turn>",)) -> str:
-        body = json.dumps({"prompt": prompt, "n_predict": n_predict, "temperature": 0.0, "top_k": 1,
-                           "stop": list(stop), "cache_prompt": True}).encode()
+    def complete(self, prompt: str, n_predict: int = 512, stop=("<end_of_turn>",), temperature: float = 0.0,
+                 seed: int = -1) -> str:
+        opts = {"temperature": 0.0, "top_k": 1} if temperature <= 0 else \
+            {"temperature": temperature, "top_p": 0.92, "top_k": 60, "repeat_penalty": 1.12, "seed": seed}
+        body = json.dumps({"prompt": prompt, "n_predict": n_predict, "stop": list(stop), "cache_prompt": True,
+                           **opts}).encode()
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/completion", data=body,
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=600) as r:

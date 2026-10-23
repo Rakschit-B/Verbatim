@@ -685,6 +685,9 @@ class VoiceStudio(QWidget):
         self.worker = Job(fn)
         self.worker.progress.connect(self.on_progress)
         self.worker.done.connect(done_cb)
+        from .gui_shell import track
+
+        track(self.w, self.worker, start_text.rstrip("…. ") or "Voice Studio")
         self.thread = qt_workers.start(self.worker, self.worker.run, [self.worker.done])
 
     def on_progress(self, f: float, msg: str):

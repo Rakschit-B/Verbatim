@@ -13,19 +13,16 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_theme_tokens_per_module():
+def test_studio_themes():
     from verbatim import ui_theme as th
 
-    seen = set()
-    for k in range(4):
-        for base in (th.LIGHT, th.DARK):
-            t = th.tokens(base, k)
-            assert t["accent"].startswith("#") and t["accent_ink"].startswith("#") and t["soft"].startswith("#")
-            seen.add(t["accent"])
-    assert len(seen) == 8                                 # every module has its own colour in both themes
-    css = th.stylesheet(th.tokens(th.LIGHT, 2), {k: "x" for k in ("arrow", "up", "check_on", "check_off",
-                                                                   "radio_on", "radio_off")})
-    assert th.MODULES[2]["light"][0] in css and th.DISPLAY in css and th.MONO in css
+    for base in (th.LIGHT, th.DARK):
+        t = th.tokens(base, 0)
+        for k in ("accent", "accent_ink", "soft", "side", "card", "player"):
+            assert t[k].startswith("#")
+    css = th.stylesheet(th.tokens(th.DARK, 0), {k: "x" for k in ("arrow", "up", "check_on", "check_off",
+                                                                  "radio_on", "radio_off")})
+    assert th.GRAD[0] in css and th.UI in css and "QWidget#playerBar" in css and "QPushButton#navItem" in css
 
 
 def test_icons_and_fonts_ship():
@@ -36,9 +33,9 @@ def test_icons_and_fonts_ship():
         assert {"home", "music", "video", "translate", "record", "vinyl"} <= set(GLYPHS[w])
     assert b"<path" in th.svg("vinyl", "#000")
     fonts = {p.name for p in (ROOT / "assets" / "fonts").glob("*.ttf")}
-    assert {"InstrumentSerif-Regular.ttf", "InstrumentSerif-Italic.ttf", "HankenGrotesk-400.ttf",
-            "HankenGrotesk-600.ttf", "JetBrainsMono-400.ttf", "Mukta-Regular.ttf"} <= fonts
-    assert (ROOT / "assets" / "fonts" / "OFL-InstrumentSerif.txt").exists()
+    assert {"Manrope-400.ttf", "Manrope-600.ttf", "Manrope-800.ttf", "JetBrainsMono-400.ttf",
+            "Mukta-Regular.ttf"} <= fonts
+    assert (ROOT / "assets" / "fonts" / "OFL-Manrope.txt").exists()
 
 
 def test_envelope_is_deterministic():

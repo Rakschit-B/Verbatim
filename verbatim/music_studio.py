@@ -68,6 +68,9 @@ class MusicRequest:
     master_lufs: float = -14.0
     formats: list = field(default_factory=lambda: ["wav", "mp3"])
     voice_job: str = ""               # score-to-voiceover: path of a .voice.json
+    sheet: dict = field(default_factory=dict)   # 3.7 song sheet: sections, lyrics, singer per section
+    cast: bool = True                 # enforce the singer of each section after generation (casting.py)
+    learned: list = field(default_factory=list)  # style words added from your taste
 
 
 def to_engine(r: MusicRequest, project_root: str, out_dir: str) -> dict:
@@ -204,6 +207,17 @@ def generate(r: MusicRequest, output_dir: str, progress=None) -> list[dict]:
     from .runtimes import EngineHost
 
     say = progress or (lambda f, m: None)
+    sheet = None
+    if r.sheet and r.sheet.get("parts"):
+        from .lyrics import Sheet
+
+        sheet = Sheet.from_dict(r.sheet)
+        if any(p.lines for p in sheet.parts):
+            r.lyrics = sheet.to_ace()
+            r.language = sheet.language or r.language
+            cap = sheet.casting_caption()
+            if cap and cap != "instrumental" and cap not in r.style:
+                r.style = (r.style.rstrip(", ") + ", " + cap).strip(", ")
     root = ensure_models(say, r.max_mode)
     host = EngineHost.get("music", say)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -214,6 +228,15 @@ def generate(r: MusicRequest, output_dir: str, progress=None) -> list[dict]:
         final = master(Path(t["path"]), out / f"{safe(r.title)} — take {k}", r)
         if r.voice_job:
             final.update(mix_under_voice(r.voice_job, final["wav"]))
+        if sheet and r.cast and any(p.lines for p in sheet.parts):
+            try:
+                from .casting import cast
+
+                say(0.9, f"Casting the singers for take {k}…")
+                c = cast(final["wav"], sheet, out / f"{safe(r.title)} — take {k} (cast)", None)
+                final.update(cast_wav=c["wav"], cast_mp3=c["mp3"], cast_note=c["note"])
+            except Exception as exc:
+                final["cast_note"] = f"Casting skipped: {exc}"[:200]
         items.append({"id": f"{stamp}-{k}", "title": r.title, "take": k, "seed": t.get("seed"), "bpm": t.get("bpm"),
                       "key": t.get("key"), "caption": t.get("caption"), "files": final, "favourite": False,
                       "request": asdict(r), "created": datetime.now().isoformat(timespec="seconds")})

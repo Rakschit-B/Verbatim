@@ -50,10 +50,10 @@ class Settings:
     active_project: str = ""                # projects.py; "" = no project
     base_vocabulary: str = ""               # vocabulary / output folder used when no project is active
     base_output_dir: str = ""
-    theme: str = "light"                    # light | dark | system (3.0 interface)
+    theme: str = "dark"                     # dark (Studio, default) | light (Clean) | system
     legacy_omnivoice: bool = False          # 3.6: OmniVoice (non-commercial weights) is legacy, off unless chosen
     last_update_check: str = ""
-    settings_version: int = 2
+    settings_version: int = 3
 
     @classmethod
     def path(cls):
@@ -68,6 +68,9 @@ class Settings:
                 # 2.1.1: switch older installs to the fast default (auto engine, cross-check off)
                 for k in ("engine", "variant", "cross_check", "settings_version"):
                     raw.pop(k, None)
+            if int(raw.get("settings_version", 1)) < 3:
+                raw["theme"] = "dark"              # 3.7: the Studio look opens dark; light stays one click away
+                raw["settings_version"] = 3
             if "infinitestory/verbatim" in str(raw.get("update_manifest_url", "")):
                 raw.pop("update_manifest_url")  # 3.2.1: placeholder channel -> the real GitHub repository
             return cls(**{k: v for k, v in raw.items() if k in names})

@@ -41,7 +41,12 @@ class LocaliseRequest:
     keep_background: bool = True        # keep the original music & effects under the new voices
     subtitles_soft: bool = True         # subtitle track inside the MP4 (switchable in players)
     subtitles_burn: bool = False        # subtitles drawn into the picture
-    lipsync: bool = False               # re-time the mouths (Cloud GPU, beta)
+    lipsync: bool = False               # re-time the mouths
+    lipsync_mode: str = "auto"          # auto (cloud if set up, else this computer) | local | cloud
+    voices: dict = field(default_factory=dict)   # speaker -> voice id chosen by the user (Feature Film)
+    names: dict = field(default_factory=dict)    # speaker -> actor name
+    kind: str = "video"                 # video (Video Localise) | film (Feature Film)
+    transcript: str = ""                # reuse an analysed transcript
     quality: str = "studio"
     clone_engine: str = "auto"
     vocabulary: str = ""
@@ -74,7 +79,8 @@ def transcribe(video: Path, settings, progress) -> str:
     return js
 
 
-def speaker_voices(json_path: str, media: str, consent_id: str, progress=None, max_s: float = 45.0) -> dict:
+def speaker_voices(json_path: str, media: str, consent_id: str, progress=None, max_s: float = 45.0,
+                   names: dict | None = None) -> dict:
     """One custom voice per speaker, cut from the film itself (their clearest 45 s), music removed."""
     from .dub import new_job
     from .voicelab import create_from_recording, decode, library, write_wav
@@ -86,7 +92,7 @@ def speaker_voices(json_path: str, media: str, consent_id: str, progress=None, m
     out = {}
     speakers = job.speakers()
     for k, spk in enumerate(speakers):
-        tag = f"{Path(media).stem} · {spk}"
+        tag = f"{Path(media).stem} · {(names or {}).get(spk) or spk}"
         if tag + ".wav" in have:                                   # already made for this film
             out[spk] = have[tag + ".wav"].id
             continue
@@ -132,15 +138,22 @@ def mux_subtitles(video: Path, srt: Path, lang: str, out: Path, burn: bool = Fal
     return out, burn_err
 
 
-def lipsync(video: Path, audio: Path, out: Path, progress=None) -> Path:
-    """Lip-sync the dubbed film on the Cloud GPU (LatentSync, Apache-2.0)."""
+def lipsync(video: Path, audio: Path, out: Path, progress=None, mode: str = "auto",
+            soundtrack: Path | None = None) -> Path:
+    """Lip-sync the dubbed film: on the Cloud GPU (LatentSync, best) or on this computer (ONNX, any Mac/PC)."""
     from .cloud import active_for
-    from .runtimes import EngineHost
 
-    if not active_for("lipsync"):
-        raise RuntimeError("Lip-sync runs on a Cloud GPU — set one up in Settings › Cloud GPU and tick Lip-sync.")
-    EngineHost.get("lipsync", progress).request("lipsync", progress=progress, video=str(video), audio=str(audio),
-                                                out=str(out))
+    if mode == "cloud" or (mode == "auto" and active_for("lipsync")):
+        from .runtimes import EngineHost
+
+        if not active_for("lipsync"):
+            raise RuntimeError("Cloud lip-sync needs a Cloud GPU — set one up in Settings › Cloud GPU.")
+        EngineHost.get("lipsync", progress).request("lipsync", progress=progress, video=str(video), audio=str(audio),
+                                                    out=str(out))
+        return out
+    from . import lipsync as local
+
+    local.sync(video, audio, out, progress, soundtrack=soundtrack)
     return out
 
 
@@ -157,7 +170,8 @@ def run(req: LocaliseRequest, settings, progress=None, stop=lambda: False) -> di
         raise FileNotFoundError(video)
     n = max(1, len(req.languages))
     say(0.01, "Listening to the film…")
-    src_json = transcribe(video, settings, lambda f, m: say(0.15 * f, "Transcribing — " + m))
+    src_json = req.transcript if req.transcript and Path(req.transcript).exists() else \
+        transcribe(video, settings, lambda f, m: say(0.15 * f, "Transcribing — " + m))
     own: dict = {}
     if req.voice_mode == "own":
         if not req.consent_person.strip():
@@ -168,7 +182,9 @@ def run(req: LocaliseRequest, settings, progress=None, stop=lambda: False) -> di
                                     f"“{video.name}” to re-voice them in other languages for this film.",
                                     scope=f"Video Localise — {video.name}", recorded_by=req.consent_person.strip(),
                                     notes="Video Localise")
-        own = speaker_voices(src_json, str(video), entry["id"], lambda f, m: say(0.15 + 0.1 * f, m))
+        own = speaker_voices(src_json, str(video), entry["id"], lambda f, m: say(0.15 + 0.1 * f, m),
+                             names=req.names)
+    own.update({k: v for k, v in (req.voices or {}).items() if v})
     tr = build(req.translator, req.translator_model or "claude-sonnet-5-5", lambda f, m: None)
     results: dict = {}
     for k, lang in enumerate(req.languages):
@@ -217,7 +233,7 @@ def run(req: LocaliseRequest, settings, progress=None, stop=lambda: False) -> di
             try:
                 p(0.86, "lip-sync on the Cloud GPU…")
                 synced = lipsync(film, Path(out["voice"]), film.with_name(film.stem + " (lip-sync raw).mp4"),
-                                 lambda f, m: p(0.86 + 0.08 * f, m))
+                                 lambda f, m: p(0.86 + 0.08 * f, m), req.lipsync_mode, soundtrack=film)
                 final = film.with_name(film.stem + " (lip-sync).mp4")
                 code, err = _run(["-i", str(synced), "-i", str(film), "-map", "0:v", "-map", "1:a", "-c", "copy",
                                   "-shortest", str(final)])    # the synced picture + the full dubbed mix
@@ -239,6 +255,9 @@ def run(req: LocaliseRequest, settings, progress=None, stop=lambda: False) -> di
     report = video.parent / f"{video.stem} — localisation.json"
     try:
         report = Path(src_json).parent / f"{video.stem} — localisation.json"
+        if req.kind == "film":
+            report = Path(settings.output_dir) / "Feature Film" / video.stem / "film.json"
+            report.parent.mkdir(parents=True, exist_ok=True)
         report.write_text(json.dumps({"video": str(video), "request": asdict(req), "results": results,
                                       "finished": datetime.now().isoformat(timespec="seconds")},
                                      ensure_ascii=False, indent=1), encoding="utf-8")
@@ -246,3 +265,21 @@ def run(req: LocaliseRequest, settings, progress=None, stop=lambda: False) -> di
         pass
     say(1.0, "All languages ready.")
     return {"results": results, "report": str(report), "transcript": src_json}
+
+
+def analyse(video: str | Path, settings, progress=None) -> dict:
+    """Feature Film step 1: transcribe with speakers and return who speaks, how much, and a sample of each."""
+    from .dub import new_job
+
+    js = transcribe(Path(video), settings, progress or (lambda f, m: None))
+    job = new_job(js, "en")
+    actors = {}
+    for ln in job.lines:
+        a = actors.setdefault(ln.speaker, {"speaker": ln.speaker, "lines": 0, "seconds": 0.0, "sample": (0.0, 0.0),
+                                            "text": ""})
+        a["lines"] += 1
+        a["seconds"] += ln.end - ln.start
+        if ln.end - ln.start > a["sample"][1] - a["sample"][0] and ln.end - ln.start <= 12:
+            a["sample"], a["text"] = (ln.start, ln.end), ln.source[:120]
+    ordered = sorted(actors.values(), key=lambda x: -x["seconds"])
+    return {"transcript": js, "actors": ordered, "duration": job.duration, "language": job.src_lang}

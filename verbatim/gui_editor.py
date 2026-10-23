@@ -33,84 +33,70 @@ def mmss(sec: float) -> str:
 
 
 # ====================================================================== audio
+def _system_play(media: Path, start: float = 0.0, length: float = 600.0):
+    """Fallback when Qt Multimedia is missing: cut a WAV slice and hand it to the OS player."""
+    tmp = Path(tempfile.gettempdir()) / f"verbatim_play_{os.getpid()}.wav"
+    flags = 0x08000000 if IS_WINDOWS else 0
+    subprocess.run([ffmpeg_path(), "-hide_banner", "-nostdin", "-loglevel", "error", "-y", "-ss", f"{start:.3f}",
+                    "-i", str(media), "-t", f"{length:.3f}", "-vn", "-ac", "1", "-ar", "22050", str(tmp)],
+                   capture_output=True, creationflags=flags)
+    if IS_WINDOWS:
+        import winsound
+
+        winsound.PlaySound(str(tmp), winsound.SND_FILENAME | winsound.SND_ASYNC)
+    else:
+        subprocess.Popen(["afplay" if IS_MAC else "paplay", str(tmp)], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+
+
 class AudioPlayer(QObject):
-    """Plays a slice of the original media with the system player (no extra Qt modules needed)."""
+    """Segment playback for the editor and previews — runs through the shared player bar (gui_player.Media),
+    so every preview gets pause, scrubbing, ±10 s and a visible timeline."""
     stopped = Signal()
 
-    def __init__(self):
+    def __init__(self, title: str = "", sub: str = ""):
         super().__init__()
-        self.proc = None
-        self.started = 0.0
-        self.offset = 0.0
-        self.length = 0.0
-        self.tmp = Path(tempfile.gettempdir()) / f"verbatim_play_{os.getpid()}.wav"
-        self.timer = QTimer(self)
-        self.timer.setInterval(200)
-        self.timer.timeout.connect(self._tick)
+        from .gui_player import Media
+
+        self.m = Media.get()
+        self.title, self.sub = title, sub
+        self.active = False
+        self.m.ended.connect(self._ended)
+        self.m.changed.connect(self._other)
 
     def playing(self) -> bool:
-        return self.started > 0
+        return self.active and self.m.playing()
 
     def position(self) -> float:
-        return self.offset + (time.monotonic() - self.started) if self.playing() else self.offset
+        return self.m.pos_s()
 
-    def play(self, media: Path, start: float, length: float = 120.0) -> str | None:
-        self.stop()
-        flags = 0x08000000 if IS_WINDOWS else 0
-        r = subprocess.run([ffmpeg_path(), "-hide_banner", "-nostdin", "-loglevel", "error", "-y", "-ss", f"{start:.3f}",
-                            "-i", str(media), "-t", f"{length:.3f}", "-vn", "-ac", "1", "-ar", "22050", "-c:a",
-                            "pcm_s16le", str(self.tmp)], capture_output=True, creationflags=flags)
-        if r.returncode != 0 or not self.tmp.exists():
-            return (r.stderr or b"").decode(errors="replace")[-300:] or "could not read audio"
-        try:
-            if IS_WINDOWS:
-                import winsound
-
-                winsound.PlaySound(str(self.tmp), winsound.SND_FILENAME | winsound.SND_ASYNC)
-            else:
-                cmd = ["afplay", str(self.tmp)] if IS_MAC else ["paplay", str(self.tmp)]
-                self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception as exc:
-            return str(exc)
-        import wave
-
-        with wave.open(str(self.tmp)) as w:
-            self.length = w.getnframes() / w.getframerate()
-        self.offset, self.started = start, time.monotonic()
-        self.timer.start()
+    def play(self, media: Path, start: float, length: float = 120.0, title: str = "", sub: str = "") -> str | None:
+        if not Path(media).exists():
+            return "file not found"
+        self._own = True
+        self.m.load(media, title or self.title or Path(media).stem, sub or self.sub, start=start,
+                    end=(start + length) if length and length < 590 else None)
+        self._own = False
+        self.active = True
         return None
 
     def stop(self):
-        if IS_WINDOWS:
-            try:
-                import winsound
-
-                winsound.PlaySound(None, 0)
-            except Exception:
-                pass
-        if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
-        self.proc = None
-        was = self.playing()
-        self.started = 0.0
-        self.timer.stop()
+        was = self.active
+        if self.active:
+            self.m.pause()
+        self.active = False
         if was:
             self.stopped.emit()
 
-    def _tick(self):
-        if not self.playing():
-            return
-        done = time.monotonic() - self.started >= self.length
-        if self.proc is not None and self.proc.poll() is not None:
-            done = True
-        if done:
-            self.stop()
+    def _ended(self):
+        if self.active:
+            self.active = False
+            self.stopped.emit()
 
-    def __del__(self):
-        try:
-            self.tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
+    def _other(self):
+        if self.active and not getattr(self, "_own", False):
+            self.active = False
+            self.stopped.emit()
 
 
 # ====================================================================== rich text cells

@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QProgressBar,
                                QPushButton, QRadioButton, QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout,
@@ -96,7 +96,7 @@ class FilmCard(QFrame):
                 return
 
     def paintEvent(self, _):
-        from .gui_score import crop_marks, font
+        from .gui_score import font
 
         t = _t()
         p = QPainter(self)
@@ -105,41 +105,36 @@ class FilmCard(QFrame):
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         p.setPen(QPen(QColor(t["accent"] if self.hover else t["border"]), 1.5 if self.hover else 1,
                       Qt.DashLine if self.hover else Qt.SolidLine))
-        p.setBrush(QColor(t["soft"] if self.hover else t["card"]))
-        p.drawRoundedRect(r, 6, 6)
-        crop_marks(p, r, QColor(t["muted"]))
-        frame = r.adjusted(28, 28, -28, -64)
+        p.setBrush(QColor(t["soft"] if self.hover else t["card2"]))
+        p.drawRoundedRect(r, 16, 16)
+        frame = r.adjusted(20, 20, -20, -62)
         ar = 16 / 9
         w = min(frame.width(), frame.height() * ar)
         h = w / ar
         box = QRectF(frame.center().x() - w / 2, frame.top() + (frame.height() - h) / 2, w, h)
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#0B0A09"))
-        p.drawRect(box)
+        clip = QPainterPath()
+        clip.addRoundedRect(box, 12, 12)
+        p.setClipPath(clip)
+        p.fillRect(box, QColor("#08080C"))
         if self.still:
             s = self.still.scaled(int(box.width() * 2), int(box.height() * 2), Qt.KeepAspectRatio, Qt.SmoothTransformation)
             s.setDevicePixelRatio(2)
             p.drawPixmap(QPointF(box.center().x() - s.width() / 4, box.center().y() - s.height() / 4), s)
         else:
-            p.setPen(QColor(t["muted"]))
-            p.setFont(font(th.DISPLAY, 30, italic=True))
-            p.drawText(box, Qt.AlignCenter, "Drop the film here")
-        # sprocket holes along both edges of the frame
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(t["card"]))
-        for k in range(int(box.width() // 18)):
-            x = box.left() + 9 + k * 18
-            p.drawRoundedRect(QRectF(x - 4, box.top() + 4, 8, 5), 1.5, 1.5)
-            p.drawRoundedRect(QRectF(x - 4, box.bottom() - 9, 8, 5), 1.5, 1.5)
-        # slate
+            px = th.pixmap("film_reel", "#5E5E78", 44, weight="light")
+            p.drawPixmap(int(box.center().x() - 22), int(box.center().y() - 36), px)
+            p.setPen(QColor("#A3A3B8"))
+            p.setFont(font(th.UI, 15, 600))
+            p.drawText(box.adjusted(0, 40, 0, 0), Qt.AlignCenter, "Drop the film here")
+        p.setClipping(False)
         p.setPen(QColor(t["ink"]))
-        p.setFont(font(th.UI, 14, 600))
-        p.drawText(QRectF(r.left() + 28, r.bottom() - 58, r.width() - 56, 22), Qt.AlignLeft | Qt.AlignVCenter,
+        p.setFont(font(th.UI, 14, 700))
+        p.drawText(QRectF(r.left() + 22, r.bottom() - 54, r.width() - 44, 22), Qt.AlignLeft | Qt.AlignVCenter,
                    self.name or "No film yet")
         p.setPen(QColor(t["sub"]))
-        p.setFont(font(th.MONO, 10, 400, spacing=1.2))
-        p.drawText(QRectF(r.left() + 28, r.bottom() - 36, r.width() - 56, 18), Qt.AlignLeft | Qt.AlignVCenter,
-                   self.meta or "MP4 · MOV · MKV · drop a video or press Choose film")
+        p.setFont(font(th.UI, 12, 500))
+        p.drawText(QRectF(r.left() + 22, r.bottom() - 32, r.width() - 44, 18), Qt.AlignLeft | Qt.AlignVCenter,
+                   self.meta or "MP4 · MOV · MKV — drop a video or press Choose film")
 
 
 class VideoStudio(QWidget):
@@ -274,8 +269,8 @@ class VideoStudio(QWidget):
         self.subs_burn = QCheckBox("Burn subtitles into the picture")
         v.addWidget(self.subs_burn)
         self.lipsync = QCheckBox("Lip-sync the faces  ·  Cloud GPU, beta")
-        self.lipsync.setToolTip("Re-times every mouth to the new language with LatentSync 1.6 on your Cloud GPU "
-                                "(Settings › Cloud GPU). Needs an NVIDIA GPU with 18 GB+.")
+        self.lipsync.setToolTip("Re-times the speaking face's mouth to the new language — on this computer (any Mac or "
+                                "PC, up to 25 min) or on your Cloud GPU (LatentSync, best quality).")
         v.addWidget(self.lipsync)
         self.quality = QComboBox()
         self.quality.addItem("Studio quality (slower, best)", "studio")
@@ -315,12 +310,8 @@ class VideoStudio(QWidget):
         from .cloud import active_for
 
         cloud = active_for("lipsync")
-        self.lipsync.setEnabled(cloud)
-        if not cloud:
-            self.lipsync.setChecked(False)
-            self.lipsync.setText("Lip-sync the faces  ·  needs a Cloud GPU (Settings)")
-        else:
-            self.lipsync.setText("Lip-sync the faces  ·  Cloud GPU, beta")
+        self.lipsync.setEnabled(True)
+        self.lipsync.setText("Lip-sync the faces  ·  " + ("Cloud GPU" if cloud else "on this computer (slower)"))
 
     def choose(self):
         p, _ = QFileDialog.getOpenFileName(self, "Choose the film", str(Path.home() / "Movies"),
@@ -401,6 +392,9 @@ class VideoStudio(QWidget):
         self.worker = _Job(lambda p, stop: run(r, settings, p, stop))
         self.worker.progress.connect(self.on_progress)
         self.worker.done.connect(self.on_done)
+        from .gui_shell import track
+
+        track(self.w, self.worker, f"Localise {Path(r.video).name}")
         self.thread = qt_workers.start(self.worker, self.worker.run, [self.worker.done])
         self.log.emit(f"Video Localise: {Path(r.video).name} → {', '.join(r.languages)}")
 

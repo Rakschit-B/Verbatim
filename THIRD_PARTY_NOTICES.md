@@ -40,7 +40,12 @@ following third-party components, which remain under their own licences; their n
 | UTMOS22 (SpeechMOS implementation) · wav2vec2 SUPERB ER | quality scorecard | MIT · Apache-2.0 |
 | OmniVoice (k2-fsa) — **legacy, opt-in, not bundled**; weights CC-BY-NC-4.0 (non-commercial) | legacy voice designer (being retired) | Apache-2.0 code / CC-BY-NC weights |
 | Phosphor Icons 2.1 (glyph geometry in `verbatim/icons_phosphor.py`) | interface icons | MIT (© 2023 Phosphor Icons) |
-| Instrument Serif, Hanken Grotesk, JetBrains Mono, Mukta (`assets/fonts`, licence texts alongside) | interface typefaces | SIL Open Font License 1.1 |
+| Manrope, JetBrains Mono, Mukta (`assets/fonts`, licence texts alongside) | interface typefaces | SIL Open Font License 1.1 |
+| Qt Multimedia + Qt Multimedia Widgets (Qt for Python) and the FFmpeg libraries shipped with them | in-app audio/video player | LGPL-3.0 / LGPL-2.1 (dynamically linked, unmodified) |
+| OpenCV (opencv-python-headless, includes its own FFmpeg build) | lip-sync image processing | Apache-2.0 (FFmpeg LGPL) |
+| Wav2Lip-GAN 96 px weights (Prajwal et al.; ONNX export from the FaceFusion assets, downloaded on first use) | local lip-sync | research / non-commercial licence — **VERBATIM internal use only** |
+| YOLO-face 8n weights (YOLOv8-based; ONNX from the FaceFusion assets, downloaded on first use) | face finding for lip-sync | AGPL-3.0 model — **internal use only** |
+| Gemma 3 4B instruct (GGUF, downloaded on first use) | offline lyric writer | Gemma Terms of Use + Prohibited Use Policy |
 | LatentSync 1.6 (ByteDance) — Cloud GPU server only, installed by `cloud/install.sh`, not bundled in the app | lip-sync in Video Localise | Apache-2.0 |
 | `tests/data/jfk.flac` (from openai/whisper tests) | test fixture | MIT |
 

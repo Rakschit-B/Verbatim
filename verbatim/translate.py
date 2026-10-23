@@ -142,8 +142,8 @@ class ClaudeTranslator:
         self.timeout = timeout
         self.usage = {"input_tokens": 0, "output_tokens": 0}
 
-    def _call(self, system: str, user: str) -> str:
-        body = json.dumps({"model": self.model, "max_tokens": 8000, "temperature": 0,
+    def _call(self, system: str, user: str, temperature: float = 0.0) -> str:
+        body = json.dumps({"model": self.model, "max_tokens": 8000, "temperature": temperature,
                            "system": system, "messages": [{"role": "user", "content": user}]}).encode()
         req = urllib.request.Request(CLAUDE_URL, data=body, method="POST", headers={
             "x-api-key": self.key, "anthropic-version": "2023-06-01", "content-type": "application/json"})

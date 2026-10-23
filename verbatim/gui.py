@@ -37,7 +37,7 @@ from .engines import ENGINE_CHOICES
 from .platform_info import IS_WINDOWS, asset, ffmpeg_path, resource_root, user_data_dir
 from .settings import FORMATS, LANGUAGES, Settings
 
-T: dict = th.tokens(th.LIGHT, 0)  # current theme tokens (tinted for the active module)
+T: dict = th.tokens(th.DARK, 0)  # current theme tokens
 CODE_TO_LANG = {v: k for k, v in LANGUAGES.items() if v}
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".mpg", ".mpeg", ".wmv", ".flv", ".mts", ".m2ts", ".3gp"}
 ENH_VALUES = ["normalize", "off", "clean", "restore"]
@@ -219,14 +219,14 @@ class DropZone(QFrame):
             w.setVisible(roomy)
 
     def paintEvent(self, _):
-        from .gui_score import crop_marks, envelope
+        from .gui_score import envelope
 
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(T["soft"] if self.hover else T["card"]))
-        p.drawRoundedRect(r, 6, 6)
+        p.drawRoundedRect(r, 16, 16)
         # the signature: a speech envelope drawn as a hairline bar graph, played up to the golden section
         w, h = r.width(), r.height()
         n = max(40, int(w / 6))
@@ -242,13 +242,12 @@ class DropZone(QFrame):
         xh = r.left() + 18 + (w - 36) * head / (n - 1)
         p.setPen(QPen(QColor(T["ink"]), 1))
         p.drawLine(QPointF(xh + 3, mid - amp * 1.25), QPointF(xh + 3, mid + amp * 1.25))
-        crop_marks(p, r, QColor(T["muted"]))
         p.setBrush(Qt.NoBrush)
         if self.hover:
             p.setPen(QPen(QColor(T["accent"]), 1.5, Qt.DashLine))
         else:
             p.setPen(QPen(QColor(T["border"]), 1))
-        p.drawRoundedRect(r, 6, 6)
+        p.drawRoundedRect(r, 16, 16)
 
 
 class UploadBadge(QLabel):
@@ -407,6 +406,7 @@ class InstallWorker(QObject):
 class ModelWorker(QObject):
     """Downloads models in the background (never during a batch)."""
     progress = Signal(str)
+    fraction = Signal(float, str)
     done = Signal(str)
 
     def __init__(self, jobs):
@@ -423,7 +423,10 @@ class ModelWorker(QObject):
             try:
                 last = [0.0]
 
-                def cb(f, m, last=last):
+                n, k = len(self.jobs), [x[0] for x in self.jobs].index(key)
+
+                def cb(f, m, last=last, n=n, k=k, label=label):
+                    self.fraction.emit((k + max(0.0, min(1.0, f))) / n, f"{label}: {m}")
                     if f - last[0] >= 0.05 or f >= 1:
                         last[0] = f
                         self.progress.emit(m)
@@ -484,7 +487,7 @@ class Window(QMainWindow):
     NAV = [("Transcribe", "home"), ("Files", "file"), ("Projects", "projects"), ("Speakers", "users"),
            ("Vocabulary", "vocab"), ("Output", "output"), ("Activity Log", "clock"), ("Settings", "gear")]
     TABS = ["Settings", "Speakers", "Vocabulary", "Output"]
-    CHAPTER = {"Transcribe": "Queue", "Files": "Library"}
+    CHAPTER = {"Transcribe": "Queue", "Files": "Transcripts"}
 
     def __init__(self):
         super().__init__()
@@ -499,18 +502,30 @@ class Window(QMainWindow):
         self.resize(min(1560, int(scr.width() * 0.94)) if scr else 1480, min(980, int(scr.height() * 0.92)) if scr else 940)
         self.setMinimumSize(1180, 720)
         self.icons = ICONS
+        self.module = 0
+        self.page_key = "home"
         self.apply_theme(first=True)
+        from .gui_shell import JobCenter
+
+        self.jobs = JobCenter()
+        self.jobs.finished.connect(lambda: QTimer.singleShot(300, self._job_finished))
 
         root = QWidget()
         root.setObjectName("root")
         self.setCentralWidget(root)
-        frame = QHBoxLayout(root)
+        self.root = root
+        col = QVBoxLayout(root)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+        frame = QHBoxLayout()
         frame.setContentsMargins(0, 0, 0, 0)
         frame.setSpacing(0)
-        frame.addWidget(self._rail())
+        col.addLayout(frame, 1)
+        frame.addWidget(self._sidebar())
         content = QWidget()
+        content.setObjectName("content")
         outer = QVBoxLayout(content)
-        outer.setContentsMargins(30, 16, 26, 18)
+        outer.setContentsMargins(28, 18, 26, 14)
         outer.setSpacing(12)
         frame.addWidget(content, 1)
         outer.addWidget(self._masthead())
@@ -522,50 +537,72 @@ class Window(QMainWindow):
         self.right = self._right_panel()  # built first: pages mirror some of its controls
         self.pages = QStackedWidget()
         self.pages.addWidget(self._transcribe_page())   # 0
-        self.pages.addWidget(self._library_page())      # 1
+        self.pages.addWidget(self._library_page())      # 1  transcripts table
         self.pages.addWidget(self._projects_page())     # 2
         self.pages.addWidget(self._log_page())          # 3
         self.pages.addWidget(self._app_settings_page())  # 4
         self.pages.addWidget(self._speakers_page())     # 5
         from .gui_voice import VoiceStudio
 
-        self.voice = VoiceStudio(self)                   # 6 — module 02
+        self.voice = VoiceStudio(self)                   # 6
         self.voice.log.connect(self.say)
         self.pages.addWidget(self.voice)
         from .gui_music import MusicStudio
 
-        self.music = MusicStudio(self)                   # 7 — module 03
+        self.music = MusicStudio(self)                   # 7
         self.music.log.connect(self.say)
         self.pages.addWidget(self.music)
         from .gui_video import VideoStudio
 
-        self.video = VideoStudio(self)                   # 8 — module 04
+        self.video = VideoStudio(self)                   # 8
         self.video.log.connect(self.say)
         self.pages.addWidget(self.video)
+        from .gui_shell import HomePage, LibraryPage
+
+        self.home = HomePage(self)                       # 9
+        self.pages.addWidget(self.home)
+        self.creations = LibraryPage(self)               # 10
+        self.pages.addWidget(self.creations)
+        from .gui_voiceover import VoiceoverCreator
+
+        self.vo = VoiceoverCreator(self)                 # 11
+        self.vo.log.connect(self.say)
+        self.pages.addWidget(self.vo)
+        from .gui_film import FeatureFilm
+
+        self.film = FeatureFilm(self)                    # 12
+        self.film.log.connect(self.say)
+        self.pages.addWidget(self.film)
         body.addWidget(self.pages, 1)
         body.addWidget(self.right)
         outer.addLayout(body, 1)
+        from .gui_player import PlayerBar
+
+        self.player = PlayerBar(self)
+        col.addWidget(self.player)
+        self.player.attach_video(root)
+        self._shortcuts()
 
         self.meta = MetaLoader()
         self.meta.ready.connect(self.on_meta)
-        self.select_nav(0)
         self.refresh_table()
         self.update_project_ui()
+        self.go("home")
         if self.s.auto_check_updates:
             QTimer.singleShot(2500, self.check_updates)
 
     # ------------------------------------------------------------------ theme
     def theme_tokens(self) -> dict:
         mode = self.s.theme
-        base = th.LIGHT
+        base = th.DARK
         if mode == "system":
             try:
-                if QApplication.styleHints().colorScheme() == Qt.ColorScheme.Dark:
-                    base = th.DARK
+                if QApplication.styleHints().colorScheme() == Qt.ColorScheme.Light:
+                    base = th.LIGHT
             except Exception:
                 pass
-        elif mode == "dark":
-            base = th.DARK
+        elif mode == "light":
+            base = th.LIGHT
         return th.tokens(base, getattr(self, "module", 0))
 
     def apply_theme(self, first: bool = False):
@@ -578,8 +615,9 @@ class Window(QMainWindow):
         ICONS.refresh()
         for r in self.rows:
             self.paint_row(r)
-        if hasattr(self, "rail"):
-            self.rail.theme_btn.glyph = "sun" if T["name"] == "dark" else "moon"
+        for w in (getattr(self, "side", None), getattr(self, "mast", None), getattr(self, "player", None)):
+            if w is not None:
+                w.retheme()
         for w in self.findChildren(QWidget):
             QWidget.update(w)          # (item views overload update(index) in some Qt for Python versions)
 
@@ -592,27 +630,38 @@ class Window(QMainWindow):
             self.theme_box.blockSignals(False)
         self.apply_theme()
 
-    # ------------------------------------------------------------------ rail + masthead
-    def _rail(self):
-        from .gui_score import Rail
+    def _shortcuts(self):
+        from PySide6.QtGui import QKeySequence, QShortcut
 
-        self.module = 0
-        self.rail = Rail(__version__)
-        self.rail.module_clicked.connect(self.select_module)
-        self.rail.log_btn.clicked.connect(lambda: self.select_nav(6))
-        self.rail.settings_btn.clicked.connect(lambda: self.select_nav(7))
-        self.rail.theme_btn.clicked.connect(self.toggle_theme)
-        self.rail.theme_btn.glyph = "sun" if T["name"] == "dark" else "moon"
-        self.rail.update_btn.clicked.connect(self.header_update_clicked)
+        from .gui_player import Media
+
+        m = Media.get()
+        for key, fn in (("Ctrl+Space", m.toggle), ("Ctrl+Left", lambda: m.skip(-10)), ("Ctrl+Right", lambda: m.skip(10))):
+            QShortcut(QKeySequence(key), self, activated=fn)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if hasattr(self, "player") and self.player.video:
+            self.player.place_video(self.root)
+
+    # ------------------------------------------------------------------ sidebar + top bar
+    def _sidebar(self):
+        from .gui_shell import Sidebar
+
+        self.side = Sidebar(self.jobs, __version__)
+        self.side.go.connect(self.go)
+        self.side.theme_btn.clicked.connect(self.toggle_theme)
         user = (getpass.getuser() or "V").strip()
-        self.rail.avatar.setText(user[:1].upper())
-        self.rail.avatar.setToolTip(f"{user} — VERBATIM {__version__} · © 2026 Infinite Story LLP")
-        return self.rail
+        self.side.avatar.setText(user[:1].upper())
+        self.side.user.setText(user[:18])
+        return self.side
 
     def _masthead(self):
-        from .gui_score import Masthead
+        from .gui_shell import TopBar
 
-        self.mast = Masthead()
+        self.mast = TopBar(self.jobs)
+        self.mast.search.connect(self.search_library)
+        self.mast.update_btn.clicked.connect(self.install_update)
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
         for i, (name, _ic) in enumerate(self.NAV):
@@ -625,52 +674,76 @@ class Window(QMainWindow):
             if name in ("Activity Log", "Settings"):
                 b.setVisible(False)
         self.nav_group.idClicked.connect(self.select_nav)
-        self.mast.status.setText(f"VERBATIM {__version__}  ·  OFFLINE-FIRST  ·  INFINITE STORY LLP")
         return self.mast
 
-    def set_masthead(self, util: str = ""):
-        k = self.module
-        m = th.MODULES[k]
-        if util == "settings":
-            self.mast.set("SETTINGS  ·  THIS COMPUTER", "Settings", "how VERBATIM works for you.", False)
-        elif util == "log":
-            self.mast.set("ACTIVITY  ·  EVERYTHING VERBATIM DID", "Activity", "the full audit trail.", False)
-        else:
-            self.mast.set(f"MODULE {m['num']} / 0{len(th.MODULES)}  ·  {m['name'].upper()}", m["name"],
-                          m["tag"].lower().rstrip(".") + ".", k == 0)
-        self.rail.set_module(None if util else k, util)
+    PAGES = {  # key: (title, tagline)
+        "home": ("Home", "What do you want to make today?"),
+        "transcribe": ("Transcribe", "Every word, on the record — batch videos and audio to exact text."),
+        "voiceover": ("Voiceover", "Write a script. Get the voice alone, and the voice with music."),
+        "voice": ("Voice Studio", "Translate, direct and perform with your consented voices."),
+        "music": ("Music", "Write it, cast the singers, own the song."),
+        "video": ("Video Localise", "One video in, every language out — subtitles and original music kept."),
+        "film": ("Feature Film", "Dub a film in each actor's own voice, on the exact timeline, lip-synced."),
+        "library": ("Library", "Everything you made — play it, download it."),
+        "activity": ("Activity", "The full audit trail of this session."),
+        "settings": ("Settings", "Engines, models, cloud GPU, updates and appearance."),
+    }
 
-    def _set_module_colour(self, k: int):
-        if k != self.module:
-            self.module = k
-            self.apply_theme()
+    def set_masthead(self, key: str = ""):
+        key = key or self.page_key
+        title, tag = self.PAGES.get(key, (key.title(), ""))
+        self.mast.set("", title, tag, key == "transcribe")
+        self.side.select(key)
 
-    def select_module(self, k: int):
-        if k == 0:
-            self._set_module_colour(0)
+    def go(self, key: str):
+        """Open a page from the sidebar, a Home tile or anywhere in the app."""
+        self.page_key = key
+        self.right.setVisible(False)
+        if key == "transcribe":
             self.select_nav(0)
             return
-        self._set_module_colour(k)
+        if key in ("activity", "settings"):
+            self.select_nav(6 if key == "activity" else 7)
+            return
         self.nav_group.setExclusive(False)
         for b in self.nav_group.buttons():
             b.setChecked(False)
         self.nav_group.setExclusive(True)
-        self.right.setVisible(False)
-        self.set_masthead()
-        if k == 1:
+        idx = {"voice": 6, "music": 7, "video": 8, "home": 9, "library": 10, "voiceover": 11, "film": 12}[key]
+        if key == "voice":
             self.voice.refresh_sources()
-            self.pages.setCurrentIndex(6)
-        elif k == 2:
+        elif key == "music":
             self.music.refresh_library()
             self.music.fill_engines()
-            self.pages.setCurrentIndex(7)
-        else:
+        elif key == "video":
             self.video.refresh()
-            self.pages.setCurrentIndex(8)
+        elif key == "home":
+            self.home.refresh()
+        elif key == "library":
+            self.creations.reload()
+        elif key == "voiceover":
+            self.vo.refresh()
+        elif key == "film":
+            self.film.refresh()
+        self.pages.setCurrentIndex(idx)
+        self.set_masthead(key)
+
+    def _job_finished(self):
+        if self.page_key == "library":
+            self.creations.reload()
+        elif self.page_key == "home":
+            self.home.refresh()
+
+    def select_module(self, k: int):
+        self.go(("transcribe", "voice", "music", "video")[max(0, min(3, k))])
+
+    def search_library(self, text: str):
+        self.go("library")
+        self.creations.q.setText(text)
 
     def send_to_voice(self, json_path: str):
         if json_path:
-            self.select_module(1)
+            self.go("voice")
             self.voice.select_source(json_path)
 
     def _banner(self):
@@ -693,12 +766,11 @@ class Window(QMainWindow):
 
     def select_nav(self, i: int):
         name = self.NAV[i][0]
-        util = {"Activity Log": "log", "Settings": "settings"}.get(name, "")
-        if self.module != 0:
-            self._set_module_colour(0)
-        self.right.setVisible(not util and name != "Files" and name != "Projects")
+        util = {"Activity Log": "activity", "Settings": "settings"}.get(name, "")
+        self.page_key = util or "transcribe"
+        self.right.setVisible(not util and name not in ("Files", "Projects"))
         self.nav_group.button(i).setChecked(True)
-        self.set_masthead(util)
+        self.set_masthead(self.page_key)
         page = {"Transcribe": 0, "Files": 1, "Projects": 2, "Speakers": 5, "Vocabulary": 0, "Output": 0,
                 "Activity Log": 3, "Settings": 4}[name]
         if page == 1:
@@ -836,7 +908,7 @@ class Window(QMainWindow):
         hh.setHighlightSections(False)
         hh.setSectionResizeMode(QHeaderView.Fixed)
         hh.setSectionResizeMode(1, QHeaderView.Stretch)
-        for col, wd in ((0, 40), (2, 84), (3, 108), (4, 132), (5, 150), (6, 158), (7, 40)):
+        for col, wd in ((0, 40), (2, 84), (3, 108), (4, 132), (5, 150), (6, 140), (7, 112)):
             self.table.setColumnWidth(col, wd)
         self.table.viewport().installEventFilter(self)
         self.table.verticalHeader().setVisible(False)
@@ -961,6 +1033,27 @@ class Window(QMainWindow):
         added.setContentsMargins(8, 0, 0, 0)
         t.setCellWidget(i, 6, added)
 
+        aw = QWidget()
+        al = QHBoxLayout(aw)
+        al.setContentsMargins(0, 0, 4, 0)
+        al.setSpacing(2)
+        pb = QToolButton()
+        pb.setObjectName("more")
+        pb.setToolTip("Play the original in the player bar")
+        pb.setCursor(Qt.PointingHandCursor)
+        ICONS.set(pb, "play", "sub", 16)
+        pb.clicked.connect(lambda _=False, r=r: self.play_row(r))
+        al.addWidget(pb)
+        db = QToolButton()
+        db.setObjectName("more")
+        db.setToolTip("Download the transcript (Word, text, subtitles…)")
+        db.setPopupMode(QToolButton.InstantPopup)
+        db.setCursor(Qt.PointingHandCursor)
+        ICONS.set(db, "download", "sub", 18)
+        dmenu = QMenu(db)
+        dmenu.aboutToShow.connect(lambda r=r, m=dmenu: self.fill_download_menu(r, m))
+        db.setMenu(dmenu)
+        al.addWidget(db)
         mb = QToolButton()
         mb.setObjectName("more")
         mb.setPopupMode(QToolButton.InstantPopup)
@@ -969,7 +1062,8 @@ class Window(QMainWindow):
         menu = QMenu(mb)
         menu.aboutToShow.connect(lambda r=r, m=menu: self.fill_row_menu(r, m))
         mb.setMenu(menu)
-        t.setCellWidget(i, 7, mb)
+        al.addWidget(mb)
+        t.setCellWidget(i, 7, aw)
         r.w = {"thumb": thumb, "dur": dur, "lang": lang, "chip": chip, "bar": bar, "pct": pct, "row": fw,
                "box": box, "meta": meta}
         self.paint_row(r)
@@ -1048,6 +1142,26 @@ class Window(QMainWindow):
         done = sum(r.state == "ready" for r in self.rows)
         total_d = sum(r.duration for r in self.rows)
         self.files_note.setText(f"  ·  {done} ready  ·  {hms(total_d)} of media")
+
+    def play_row(self, r: Row):
+        from .gui_player import Media
+
+        Media.get().load(r.path, r.path.stem, "Original · " + (r.language or "media"))
+
+    def fill_download_menu(self, r: Row, m: QMenu):
+        from .gui_player import save_copy
+
+        m.clear()
+        names = {"docx": "Word document", "txt": "Text", "srt": "Subtitles (SRT)", "vtt": "Subtitles (VTT)",
+                 "csv": "Spreadsheet (CSV)", "json": "JSON", "md": "Markdown", "en_txt": "English translation"}
+        got = False
+        for k, p in (r.outputs or {}).items():
+            if k == "folder" or not isinstance(p, str) or not Path(p).is_file():
+                continue
+            m.addAction(f"{names.get(k, k.upper())}  ·  {Path(p).suffix[1:].upper()}", lambda p=p: save_copy(self, p))
+            got = True
+        if not got:
+            m.addAction("Transcribe the file first").setEnabled(False)
 
     def fill_row_menu(self, r: Row, m: QMenu):
         m.clear()
@@ -1784,8 +1898,8 @@ class Window(QMainWindow):
         iv.addWidget(label("Appearance", "h3"))
         row = QHBoxLayout()
         row.addWidget(label("Theme", "sub"))
-        self.theme_box = self._combo(["Light", "Dark", "Match system"],
-                                     {"light": 0, "dark": 1, "system": 2}.get(self.s.theme, 0), 180)
+        self.theme_box = self._combo(["Clean (light)", "Studio (dark)", "Match system"],
+                                     {"light": 0, "dark": 1, "system": 2}.get(self.s.theme, 1), 180)
         self.theme_box.setFixedWidth(200)
         self.theme_box.currentIndexChanged.connect(self.change_theme)
         row.addWidget(self.theme_box)
@@ -2184,6 +2298,7 @@ class Window(QMainWindow):
         self.worker.status.connect(self.on_status)
         self.worker.result.connect(self.on_result)
         self.worker.finished.connect(self.on_finished)
+        self.batch_job = self.jobs.add(f"Transcribing {len(todo)} file(s)", "transcribe")
         self.thread = qt_workers.start(self.worker, self.worker.run, [self.worker.finished])
 
     def on_status(self, key: str, frac: float, msg: str):
@@ -2208,6 +2323,8 @@ class Window(QMainWindow):
             prog = sum(1.0 if b.state in ("ready", "failed", "stopped") else b.frac for b in batch) / len(batch)
             self.overall.setValue(int(100 * prog))
             self.mast.ruler.set_progress(prog)
+            if getattr(self, "batch_job", None):
+                self.batch_job.progress(prog, f"{name}: {msg}"[:90])
         self.update_summary()
 
     def on_result(self, key: str, info: dict):
@@ -2225,6 +2342,13 @@ class Window(QMainWindow):
         self.stop.setEnabled(False)
         self.overall.setVisible(False)
         self.mast.ruler.set_progress(None)
+        if getattr(self, "batch_job", None):
+            if out.get("error"):
+                self.batch_job.fail(out["error"])
+            else:
+                self.batch_job.done({"Master Excel Log": out.get("excel", "")},
+                                    f"{out.get('completed', 0)} done · {out.get('failed', 0)} failed")
+            self.batch_job = None
         for r in getattr(self, "batch", []):
             if r.state in ("queued", "processing", "transcribing"):
                 r.state, r.message = "stopped", "Not started (batch stopped)"
@@ -2345,10 +2469,9 @@ class Window(QMainWindow):
         self.new_version = version
         self.banner_text.setText(f"<b>VERBATIM {version} is available on GitHub.</b>  {notes[:160]}")
         self.banner.setVisible(True)
-        if hasattr(self, "rail"):
-            self.rail.update_btn.dot = True
-            self.rail.update_btn.setToolTip(f"Update to VERBATIM {version}")
-            self.rail.update_btn.update()
+        if hasattr(self, "mast"):
+            self.mast.update_btn.setText(f"  Update to {version}")
+            self.mast.update_btn.setVisible(True)
         self.say(f"Update available: {version}")
 
     def header_update_clicked(self):
@@ -2453,6 +2576,9 @@ class Window(QMainWindow):
         self.mworker = ModelWorker(jobs)
         self.mworker.progress.connect(self.on_model_progress)
         self.mworker.done.connect(self.on_models_done)
+        mj = self.jobs.add(f"Downloading {len(jobs)} model(s)", "download")
+        self.mworker.fraction.connect(mj.progress)
+        self.mworker.done.connect(lambda names: mj.done(msg=f"Ready: {names}"[:120]))
         self.mthread = qt_workers.start(self.mworker, self.mworker.run, [self.mworker.done])
 
     def on_model_progress(self, m: str):

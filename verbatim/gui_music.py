@@ -1,20 +1,31 @@
 # Copyright © 2026 Infinite Story LLP. All rights reserved.
 # VERBATIM is proprietary software of Infinite Story LLP. Unauthorised copying, modification or
 # distribution of this file, via any medium, is strictly prohibited.
-"""Module 03 — Music Studio page: compose (left), your library of takes (centre), engine status (top)."""
+"""Music (3.7, rebuilt): describe the sound, write or generate lyrics, cast every section — male, female,
+duet or chorus — and create. Every take plays in the player bar, learns from your 👍 / 👎 and downloads in one
+click (song, cast version, stems, lyrics)."""
 from __future__ import annotations
 
+import random
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal
+from PySide6.QtCore import QObject, QSize, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-                               QDoubleSpinBox, QMenu, QToolButton,
-                               QFileDialog, QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-                               QScrollArea, QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFrame,
+                               QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit,
+                               QProgressBar, QPushButton, QScrollArea, QSlider, QSpinBox, QToolButton, QVBoxLayout,
+                               QWidget)
 
 from . import music_studio as ms
+from . import ui_theme as th
+from .gui_player import Cover, Media, fmt, save_copy
+from .lyrics import SECTIONS, SINGERS, Part, Sheet
+
+
+def _t() -> dict:
+    from . import gui
+
+    return gui.T
 
 
 def _label(text="", name=None, wrap=False):
@@ -25,9 +36,9 @@ def _label(text="", name=None, wrap=False):
     return lab
 
 
-def _card():
+def _card(name="card"):
     f = QFrame()
-    f.setObjectName("card")
+    f.setObjectName(name)
     return f
 
 
@@ -46,36 +57,162 @@ class _Job(QObject):
             self.done.emit(None, f"{type(exc).__name__}: {exc}")
 
 
-class Dial(QWidget):
-    """Labelled 0–100 slider (Suno-style dial)."""
+# ====================================================================== song sheet editor
+class SectionCard(QFrame):
+    """One section: its name, who sings it, and its lines."""
+    removed = Signal(object)
 
-    def __init__(self, name: str, left: str, right: str, value: int, tip: str = ""):
+    def __init__(self, part: Part):
         super().__init__()
+        self.setObjectName("card2")
         v = QVBoxLayout(self)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(2)
+        v.setContentsMargins(10, 8, 10, 8)
+        v.setSpacing(6)
         top = QHBoxLayout()
-        top.addWidget(_label(name, "sub"))
-        top.addStretch()
-        self.val = _label(str(value), "hint")
-        top.addWidget(self.val)
+        top.setSpacing(6)
+        self.section = QComboBox()
+        self.section.addItems(SECTIONS)
+        self.section.setCurrentText(part.section if part.section in SECTIONS else "Verse")
+        top.addWidget(self.section)
+        self.singer = QComboBox()
+        for k, (label, _cap, _n) in SINGERS.items():
+            self.singer.addItem(label, k)
+        self.singer.setCurrentIndex(max(0, self.singer.findData(part.singer)))
+        self.singer.setToolTip("Who sings this section")
+        top.addWidget(self.singer, 1)
+        rm = QPushButton()
+        rm.setObjectName("iconBtn")
+        rm.setToolTip("Remove section")
+        rm.setIcon(th.icon("x", _t()["sub"], 14))
+        rm.clicked.connect(lambda: self.removed.emit(self))
+        top.addWidget(rm)
         v.addLayout(top)
-        self.s = QSlider(Qt.Horizontal)
-        self.s.setRange(0, 100)
-        self.s.setValue(value)
-        self.s.valueChanged.connect(lambda x: self.val.setText(str(x)))
-        v.addWidget(self.s)
-        ends = QHBoxLayout()
-        ends.addWidget(_label(left, "hint"))
-        ends.addStretch()
-        ends.addWidget(_label(right, "hint"))
-        v.addLayout(ends)
-        self.setToolTip(tip)
+        self.text = QPlainTextEdit("\n".join(part.lines))
+        self.text.setPlaceholderText("Lines for this section…")
+        self.text.setFixedHeight(78)
+        v.addWidget(self.text)
 
-    def value(self) -> int:
-        return self.s.value()
+    def part(self) -> Part:
+        return Part(self.section.currentText(), self.singer.currentData(),
+                    [ln.strip() for ln in self.text.toPlainText().splitlines() if ln.strip()])
 
 
+class LyricsDialog(QDialog):
+    """Write lyrics with AI — offline on this computer (Gemma 3) or online (Claude)."""
+
+    def __init__(self, parent, plan: list[tuple[str, str]], style: str):
+        super().__init__(parent)
+        self.setWindowTitle("Write lyrics with AI")
+        self.setMinimumWidth(560)
+        v = QVBoxLayout(self)
+        v.setSpacing(10)
+        v.addWidget(_label("What is the song about?", "h2"))
+        self.brief = QPlainTextEdit()
+        self.brief.setPlaceholderText("e.g. A wedding song for a Punjabi family — two families becoming one, dhol, "
+                                      "joy, a chorus everyone can sing")
+        self.brief.setFixedHeight(90)
+        v.addWidget(self.brief)
+        row = QHBoxLayout()
+        row.addWidget(_label("Language", "sub"))
+        self.lang = QComboBox()
+        for code, name in ms.LANGS.items():
+            if code not in ("instrumental", "unknown"):
+                self.lang.addItem(name, code)
+        row.addWidget(self.lang, 1)
+        row.addWidget(_label("Writer", "sub"))
+        self.engine = QComboBox()
+        self.engine.addItem("Offline — Gemma 3 on this computer", "offline")
+        self.engine.addItem("Online — Claude (best craft)", "claude")
+        row.addWidget(self.engine, 1)
+        v.addLayout(row)
+        v.addWidget(_label("Sections and singers follow your song sheet: " +
+                           " · ".join(f"{s} ({SINGERS[g][0].split(' ·')[0]})" for s, g in plan), "hint", wrap=True))
+        self.style = style
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("Write")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+
+
+# ====================================================================== library rows
+class SongRow(QFrame):
+    def __init__(self, page, it: dict, queue):
+        super().__init__()
+        self.page, self.it = page, it
+        self.setObjectName("card2")
+        h = QHBoxLayout(self)
+        h.setContentsMargins(10, 8, 10, 8)
+        h.setSpacing(10)
+        c = Cover(46)
+        c.set("music", hash(it.get("id", "")) % 3)
+        h.addWidget(c)
+        info = QVBoxLayout()
+        info.setSpacing(1)
+        info.addWidget(_label(f"{it.get('title', 'Untitled')}  ·  take {it.get('take', 1)}", "fname"))
+        f = it.get("files", {}) or {}
+        cap = (it.get("caption") or (it.get("request") or {}).get("style") or "")[:90]
+        meta = " · ".join(x for x in (f"{it.get('bpm')} BPM" if it.get("bpm") else "", it.get("key") or "",
+                                       "cast ✓" if f.get("cast_wav") else "") if x)
+        info.addWidget(_label(f"{meta}   {cap}".strip(), "hint"))
+        h.addLayout(info, 1)
+        if f.get("seconds"):
+            h.addWidget(_label(fmt(int(float(f["seconds"]) * 1000)), "time"))
+        play = QPushButton()
+        play.setObjectName("playBtn")
+        play.setStyleSheet("min-width:36px;max-width:36px;min-height:36px;max-height:36px;border-radius:18px;")
+        play.setIcon(th.icon("play", _t()["bg"], 16, weight="fill"))
+        play.clicked.connect(lambda: page.play(it, queue))
+        h.addWidget(play)
+        for glyph, ev, tip in (("thumbs_up", "like", "More like this — VERBATIM learns your taste"),
+                               ("thumbs_down", "dislike", "Less like this"),
+                               ("heart", "favourite", "Favourite")):
+            b = QPushButton()
+            b.setObjectName("iconBtn")
+            b.setToolTip(tip)
+            on = (ev == "favourite" and it.get("favourite")) or it.get("rating") == ev
+            b.setIcon(th.icon(glyph, _t()["accent"] if on else _t()["sub"], 17, weight="fill" if on else "regular"))
+            b.clicked.connect(lambda _=False, e=ev: page.rate(it, e))
+            h.addWidget(b)
+        dl = QToolButton()
+        dl.setText("  Download")
+        dl.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        dl.setIcon(th.icon("download", _t()["ink"], 16))
+        dl.setPopupMode(QToolButton.InstantPopup)
+        m = QMenu(dl)
+        labels = [("cast_mp3", "Song — cast singers (MP3)"), ("cast_wav", "Song — cast singers (WAV)"),
+                  ("mp3", "Song (MP3)"), ("wav", "Song (WAV)"), ("flac", "Song (FLAC)"), ("with_voice", "With voiceover"),
+                  ("vocals", "Vocals stem"), ("instrumental", "Instrumental stem")]
+        for k, label in labels:
+            p = f.get(k)
+            if p and Path(str(p)).exists():
+                m.addAction(label, lambda p=p: page.download(it, p))
+        for ver in it.get("versions", []) or []:
+            if ver.get("mp3") and Path(ver["mp3"]).exists():
+                m.addAction(f"Sung by {ver.get('voice')} (MP3)", lambda p=ver["mp3"]: page.download(it, p))
+        m.addSeparator()
+        m.addAction("Lyrics (TXT)", lambda: page.save_lyrics(it))
+        dl.setMenu(m)
+        h.addWidget(dl)
+        more = QToolButton()
+        more.setObjectName("more")
+        more.setIcon(th.icon("more", _t()["sub"], 18))
+        more.setPopupMode(QToolButton.InstantPopup)
+        mm = QMenu(more)
+        mm.addAction("Reuse these settings", lambda: page.reuse(it))
+        mm.addAction("Re-roll (same settings, new seed)", lambda: page.reroll(it))
+        mm.addAction("Remix / extend…", lambda: page.remix(it))
+        mm.addAction("Re-cast the singers", lambda: page.recast(it))
+        mm.addAction("Sing it in my voice…", lambda: page.sing_as(it))
+        mm.addAction("Separate stems", lambda: page.stems(it))
+        mm.addAction("Use as voiceover music", lambda: page.use_as_bed(it))
+        mm.addSeparator()
+        mm.addAction("Show in folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(f.get("wav", "")).parent))))
+        more.setMenu(mm)
+        h.addWidget(more)
+
+
+# ====================================================================== page
 class MusicStudio(QWidget):
     log = Signal(str)
 
@@ -83,214 +220,134 @@ class MusicStudio(QWidget):
         super().__init__()
         self.w = window
         self.thread = None
-        self.player = None
+        self.cards: list[SectionCard] = []
         h = QHBoxLayout(self)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(16)
-        h.addWidget(self._composer())
-        h.addWidget(self._library(), 1)
-        self.refresh_library()
+        h.addWidget(self._create())
+        h.addWidget(self._songs(), 1)
+        self.load_sheet(Sheet("", "en", [Part(s, g, []) for s, g in
+                                         [("Verse", "male"), ("Chorus", "duet"), ("Verse", "female"),
+                                          ("Chorus", "chorus3"), ("Bridge", "male"), ("Chorus", "choir")]]))
 
-    # ------------------------------------------------------------ composer (left)
-    def _composer(self):
+    # ------------------------------------------------------------ create panel
+    def _create(self):
         c = _card()
-        c.setFixedWidth(440)
+        c.setFixedWidth(500)
         outer = QVBoxLayout(c)
-        outer.setContentsMargins(18, 18, 18, 18)
+        outer.setContentsMargins(18, 16, 18, 16)
         outer.setSpacing(10)
-        top = QHBoxLayout()
-        top.addWidget(_label("Compose", "h2"))
-        top.addStretch()
-        seg = QFrame()
-        seg.setObjectName("segBar")
-        sl = QHBoxLayout(seg)
-        sl.setContentsMargins(4, 4, 4, 4)
-        self.mode = QButtonGroup(self)
-        for i, name in enumerate(["Simple", "Custom", "Remix"]):
-            b = QPushButton(name)
-            b.setObjectName("seg")
-            b.setCheckable(True)
-            self.mode.addButton(b, i)
-            sl.addWidget(b)
-        self.mode.button(1).setChecked(True)
-        self.mode.idClicked.connect(self.on_mode)
-        top.addWidget(seg)
-        outer.addLayout(top)
+        outer.addWidget(_label("Create a song", "h1"))
         sc = QScrollArea()
         sc.setWidgetResizable(True)
         sc.setFrameShape(QFrame.NoFrame)
         sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         inner = QWidget()
         v = QVBoxLayout(inner)
-        v.setContentsMargins(2, 0, 6, 0)
+        v.setContentsMargins(0, 0, 8, 0)
         v.setSpacing(10)
         self.title = QLineEdit()
-        self.title.setPlaceholderText("Track title")
+        self.title.setPlaceholderText("Song title")
         v.addWidget(self.title)
-        # simple
-        self.simple_box = QWidget()
-        sv = QVBoxLayout(self.simple_box)
-        sv.setContentsMargins(0, 0, 0, 0)
-        self.description = QPlainTextEdit()
-        self.description.setPlaceholderText("Describe the song — e.g. “An uplifting Hindi wedding song with dhol, "
-                                            "a female lead and a big singalong chorus”. VERBATIM writes the style, "
-                                            "lyrics and structure for you.")
-        self.description.setMaximumHeight(110)
-        sv.addWidget(self.description)
-        v.addWidget(self.simple_box)
-        # custom
-        self.custom_box = QWidget()
-        cv = QVBoxLayout(self.custom_box)
-        cv.setContentsMargins(0, 0, 0, 0)
-        cv.setSpacing(8)
-        row = QHBoxLayout()
-        row.addWidget(_label("Style", "sub"))
-        row.addStretch()
-        b = QPushButton("Prompt library…")
-        b.setObjectName("link")
-        b.clicked.connect(self.pick_prompt)
-        row.addWidget(b)
-        cv.addLayout(row)
+        srow = QHBoxLayout()
+        srow.addWidget(_label("SOUND", "kicker"))
+        srow.addStretch()
+        insp = QPushButton("  Inspire me")
+        insp.setObjectName("link")
+        insp.clicked.connect(self.inspire)
+        srow.addWidget(insp)
+        v.addLayout(srow)
         self.style = QPlainTextEdit()
-        self.style.setPlaceholderText("Genre, mood, instruments, production — e.g. “cinematic corporate, warm piano, "
-                                      "swelling strings, hopeful, builds to a confident finale”")
-        self.style.setMaximumHeight(90)
-        cv.addWidget(self.style)
-        row = QHBoxLayout()
-        row.addWidget(_label("Lyrics", "sub"))
-        row.addStretch()
+        self.style.setPlaceholderText("Genre, mood, instruments, production — e.g. “Bollywood romantic, soft piano, "
+                                      "strings, tabla groove, warm, cinematic build to a big final chorus”")
+        self.style.setFixedHeight(84)
+        self.style.textChanged.connect(self.show_taste)
+        v.addWidget(self.style)
+        self.taste = _label("", "hint", wrap=True)
+        v.addWidget(self.taste)
+        self.use_taste = QCheckBox("Add what I usually like")
+        self.use_taste.setChecked(True)
+        v.addWidget(self.use_taste)
+        lrow = QHBoxLayout()
+        lrow.addWidget(_label("LYRICS & SINGERS", "kicker"))
+        lrow.addStretch()
         self.instrumental = QCheckBox("Instrumental")
-        self.instrumental.setChecked(True)
-        self.instrumental.toggled.connect(lambda on: (self.lyrics.setEnabled(not on), self.tags_row.setEnabled(not on)))
-        row.addWidget(self.instrumental)
-        cv.addLayout(row)
-        from PySide6.QtWidgets import QGridLayout
-
-        tags = QGridLayout()
-        tags.setSpacing(4)
-        tags.setContentsMargins(0, 0, 0, 0)
-        for k, t in enumerate(("[Intro]", "[Verse]", "[Pre-Chorus]", "[Chorus]", "[Bridge]", "[Drop]", "[Solo]",
-                               "[Outro]")):
-            tb = QPushButton(t)
-            tb.setObjectName("chip")
-            tb.clicked.connect(lambda _=False, t=t: self.lyrics.insertPlainText(("\n" if self.lyrics.toPlainText() else "")
-                                                                                 + t + "\n"))
-            tags.addWidget(tb, k // 4, k % 4)
-        self.tags_row = QWidget()
-        self.tags_row.setLayout(tags)
-        self.tags_row.setEnabled(False)
-        cv.addWidget(self.tags_row)
-        self.lyrics = QPlainTextEdit()
-        self.lyrics.setPlaceholderText("[Verse]\nWrite your lyrics with section tags…\n\n[Chorus]\n…")
-        self.lyrics.setEnabled(False)
-        self.lyrics.setMinimumHeight(120)
-        cv.addWidget(self.lyrics)
-        v.addWidget(self.custom_box)
-        # remix
-        self.remix_box = QWidget()
-        rv = QVBoxLayout(self.remix_box)
-        rv.setContentsMargins(0, 0, 0, 0)
-        row = QHBoxLayout()
-        self.src = QLineEdit()
-        self.src.setReadOnly(True)
-        self.src.setPlaceholderText("Source track (yours or a take from the library)")
-        row.addWidget(self.src, 1)
-        b = QPushButton("Choose…")
-        b.clicked.connect(lambda: self.src.setText(QFileDialog.getOpenFileName(
-            self, "Source track", str(Path.home()), "Audio (*.wav *.mp3 *.flac *.m4a *.aac)")[0] or self.src.text()))
-        row.addWidget(b)
-        rv.addLayout(row)
-        self.remix_kind = QComboBox()
-        self.remix_kind.addItem("Cover — same song, new style", "cover")
-        self.remix_kind.addItem("Repaint — redo a section", "repaint")
-        self.remix_kind.addItem("Extend — continue the track (base model)", "extend")
-        rv.addWidget(self.remix_kind)
-        row = QHBoxLayout()
-        row.addWidget(_label("Section", "sub"))
-        self.rs, self.re_ = QDoubleSpinBox(), QDoubleSpinBox()
-        for sp in (self.rs, self.re_):
-            sp.setRange(-1, 600)
-            sp.setSuffix(" s")
-        self.re_.setValue(-1)
-        row.addWidget(self.rs)
-        row.addWidget(_label("to", "hint"))
-        row.addWidget(self.re_)
-        rv.addLayout(row)
-        self.cover_strength = Dial("Keep from the original", "loose", "close", 60,
-                                   "How much of the source melody and structure to keep in a cover")
-        rv.addWidget(self.cover_strength)
-        v.addWidget(self.remix_box)
-        # metadata
-        g = QFormLayout()
-        g.setHorizontalSpacing(10)
-        self.lang = QComboBox()
-        for k, name in ms.LANGS.items():
-            if k != "instrumental":
-                self.lang.addItem(name, k)
-        self.lang.setCurrentIndex(max(0, self.lang.findData("en")))
-        g.addRow(_label("Vocals in", "sub"), self.lang)
-        mrow = QHBoxLayout()
-        self.bpm = QSpinBox()
-        self.bpm.setRange(0, 300)
-        self.bpm.setSpecialValueText("Auto")
-        self.key = QComboBox()
-        for k in ms.KEYS:
-            self.key.addItem(k or "Auto key", k)
-        self.ts = QComboBox()
-        for k, n in ms.TIME_SIGS.items():
-            self.ts.addItem(n, k)
-        mrow.addWidget(self.bpm)
-        mrow.addWidget(self.key, 1)
-        mrow.addWidget(self.ts)
-        g.addRow(_label("BPM · key", "sub"), mrow)
-        drow = QHBoxLayout()
+        self.instrumental.toggled.connect(self.on_instrumental)
+        lrow.addWidget(self.instrumental)
+        v.addLayout(lrow)
+        arow = QHBoxLayout()
+        self.write_btn = QPushButton("  Write lyrics with AI")
+        self.write_btn.setObjectName("primary")
+        self.write_btn.setIcon(th.icon("pen", "#FFFFFF", 16))
+        self.write_btn.clicked.connect(self.write_lyrics)
+        arow.addWidget(self.write_btn)
+        add = QPushButton("+ Section")
+        add.setObjectName("ghost")
+        add.clicked.connect(lambda: self.add_section(Part("Verse", "male", [])))
+        arow.addWidget(add)
+        paste = QPushButton("Paste lyrics…")
+        paste.setObjectName("ghost")
+        paste.setToolTip("Paste lyrics with [Verse] / [Chorus | Duet] headers — VERBATIM builds the sections")
+        paste.clicked.connect(self.paste_lyrics)
+        arow.addWidget(paste)
+        v.addLayout(arow)
+        self.sections_box = QVBoxLayout()
+        self.sections_box.setSpacing(8)
+        self.sections_w = QWidget()
+        self.sections_w.setLayout(self.sections_box)
+        v.addWidget(self.sections_w)
+        vrow = QHBoxLayout()
+        vrow.addWidget(_label("Sung in", "sub"))
+        self.language = QComboBox()
+        for code, name in ms.LANGS.items():
+            if code not in ("instrumental", "unknown"):
+                self.language.addItem(name, code)
+        vrow.addWidget(self.language, 1)
+        self.cast = QCheckBox("Enforce the singers")
+        self.cast.setChecked(True)
+        self.cast.setToolTip("After the song is made, VERBATIM re-voices each section to its singer (male, female, "
+                             "duet, chorus layers). Uses the voice engine when installed.")
+        vrow.addWidget(self.cast)
+        v.addLayout(vrow)
+        v.addWidget(_label("SHAPE", "kicker"))
+        g = QGridLayout()
+        g.setHorizontalSpacing(8)
+        g.addWidget(_label("Length", "sub"), 0, 0)
         self.duration = QSpinBox()
-        self.duration.setRange(10, 600)
-        self.duration.setValue(60)
+        self.duration.setRange(10, 480)
+        self.duration.setValue(150)
         self.duration.setSuffix(" s")
+        g.addWidget(self.duration, 0, 1)
+        g.addWidget(_label("Takes", "sub"), 0, 2)
         self.takes = QSpinBox()
         self.takes.setRange(1, 4)
         self.takes.setValue(2)
-        self.takes.setSuffix(" takes")
-        drow.addWidget(self.duration)
-        drow.addWidget(self.takes)
-        g.addRow(_label("Length", "sub"), drow)
+        g.addWidget(self.takes, 0, 3)
+        g.addWidget(_label("BPM", "sub"), 1, 0)
+        self.bpm = QSpinBox()
+        self.bpm.setRange(0, 220)
+        self.bpm.setSpecialValueText("Auto")
+        g.addWidget(self.bpm, 1, 1)
+        g.addWidget(_label("Key", "sub"), 1, 2)
+        self.key = QComboBox()
+        for k in ms.KEYS:
+            self.key.addItem(k or "Auto", k)
+        g.addWidget(self.key, 1, 3)
         v.addLayout(g)
-        # dials
-        v.addWidget(_label("Creative controls", "h3"))
-        self.influence = Dial("Style influence", "loose", "strict", 70, "How closely the music follows your style")
-        self.weird = Dial("Weirdness", "safe", "wild", 35, "How adventurous the composition is")
-        self.variety = Dial("Variety", "exact", "reinterpret", 0, "Let the song planner rewrite your style prompt")
-        for d in (self.influence, self.weird, self.variety):
-            v.addWidget(d)
-        self.exclude = QLineEdit()
-        self.exclude.setPlaceholderText("Exclude — e.g. male vocals, electric guitar, drums")
-        v.addWidget(self.exclude)
-        row = QHBoxLayout()
-        self.max_mode = QCheckBox("Max mode (richer, slower)")
-        row.addWidget(self.max_mode)
-        row.addStretch()
-        row.addWidget(_label("Seed", "sub"))
+        self.avoid = QLineEdit()
+        self.avoid.setPlaceholderText("Avoid (e.g. autotune, heavy distortion)")
+        v.addWidget(self.avoid)
+        qrow = QHBoxLayout()
+        self.max_mode = QCheckBox("Max quality (slower)")
+        qrow.addWidget(self.max_mode)
+        qrow.addStretch()
+        qrow.addWidget(_label("Seed", "sub"))
         self.seed = QSpinBox()
-        self.seed.setRange(-1, 2 ** 31 - 1)
-        self.seed.setSpecialValueText("Random")
+        self.seed.setRange(-1, 2_000_000_000)
         self.seed.setValue(-1)
-        row.addWidget(self.seed)
-        v.addLayout(row)
-        row = QHBoxLayout()
-        row.addWidget(_label("Master to", "sub"))
-        self.lufs = QComboBox()
-        for t, x in (("Streaming / social (−14 LUFS)", -14.0), ("Broadcast (−23 LUFS)", -23.0),
-                     ("Under a voiceover (−18 LUFS)", -18.0)):
-            self.lufs.addItem(t, x)
-        row.addWidget(self.lufs, 1)
-        v.addLayout(row)
-        b = QPushButton("  Score a voiceover…")
-        self.w.icons.set(b, "mic2", "ink", 15)
-        b.setToolTip("Writes music to the exact length and emotional arc of a Voice Studio voiceover, then mixes it under "
-                     "the voice.")
-        b.clicked.connect(self.score_voiceover)
-        v.addWidget(b)
+        self.seed.setSpecialValueText("Random")
+        qrow.addWidget(self.seed)
+        v.addLayout(qrow)
         v.addStretch()
         sc.setWidget(inner)
         outer.addWidget(sc, 1)
@@ -301,201 +358,180 @@ class MusicStudio(QWidget):
         self.bar.setTextVisible(False)
         self.bar.setVisible(False)
         outer.addWidget(self.bar)
-        self.go = QPushButton("   Create music")
+        self.go = QPushButton("   Create song")
         self.go.setObjectName("start")
         self.go.setCursor(Qt.PointingHandCursor)
-        self.w.icons.set(self.go, "sparkle", "#FFFFFF", 20)
+        self.go.setIcon(th.icon("music", "#FFFFFF", 20, weight="fill"))
         self.go.clicked.connect(self.create)
         outer.addWidget(self.go)
-        self.voice_job = ""
-        self.on_mode(1)
         return c
 
-    def on_mode(self, i: int):
-        self.simple_box.setVisible(i == 0)
-        self.custom_box.setVisible(i == 1)
-        self.remix_box.setVisible(i == 2)
-
-    # ------------------------------------------------------------ library (centre)
-    def _library(self):
+    def _songs(self):
         c = _card()
         v = QVBoxLayout(c)
-        v.setContentsMargins(22, 18, 22, 14)
+        v.setContentsMargins(18, 16, 18, 16)
         v.setSpacing(10)
         top = QHBoxLayout()
-        top.addWidget(_label("Music Studio", "h1"))
-        top.addSpacing(10)
-
+        top.addWidget(_label("Your songs", "h1"))
         top.addStretch()
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search your music…")
-        self.search.setFixedWidth(200)
-        self.search.textChanged.connect(self.refresh_library)
+        self.search.setObjectName("search")
+        self.search.setPlaceholderText("Search songs…")
+        self.search.setFixedWidth(220)
+        self.search.textChanged.connect(lambda _: self.refresh_library())
         top.addWidget(self.search)
         self.fav_only = QCheckBox("Favourites")
-        self.fav_only.toggled.connect(self.refresh_library)
+        self.fav_only.toggled.connect(lambda _: self.refresh_library())
         top.addWidget(self.fav_only)
         v.addLayout(top)
         self.engine_row = QHBoxLayout()
         v.addLayout(self.engine_row)
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["", "Title", "Take", "Length", "BPM · Key", "Style", "Created"])
-        hh = self.table.horizontalHeader()
-        hh.setSectionResizeMode(QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(5, QHeaderView.Stretch)
-        hh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(44)
-        self.table.setShowGrid(False)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.table.cellDoubleClicked.connect(lambda r, c: self.play())
-        v.addWidget(self.table, 1)
-        self.empty = _label("Your music appears here. Describe a song on the left and press Create music — every take is "
-                            "kept with its seed so you can re-roll, remix or reuse it.", "hint", wrap=True)
-        self.empty.setAlignment(Qt.AlignCenter)
-        v.addWidget(self.empty)
-        acts = QHBoxLayout()
-        acts.setSpacing(6)
-        for text, fn, tip in (("▶  Play", self.play, "Play the selected take"),
-                              ("■", self.stop, "Stop"),
-                              ("♥  Favourite", self.favourite, "Keep this take"),
-                              ("Re-roll", self.reroll, "Same settings, new seed"),
-                              ("Remix…", self.remix, "Cover, repaint or extend this take")):
-            b = QPushButton(text)
-            b.setToolTip(tip)
-            b.clicked.connect(fn)
-            acts.addWidget(b)
-        sing = QPushButton("  Sing it in my voice…")
-        sing.setObjectName("pillBtn")
-        sing.setProperty("accent", True)
-        sing.setToolTip("Re-sing this take's vocals in one of your consented Voice Lab voices — melody and timing stay")
-        sing.clicked.connect(self.sing_as)
-        acts.addWidget(sing)
-        acts.addStretch()
-        more = QToolButton()
-        more.setText("More  ▾")
-        more.setPopupMode(QToolButton.InstantPopup)
-        m = QMenu(more)
-        m.addAction("Reuse these settings", self.reuse)
-        m.addAction("Separate stems (vocals / instrumental)", self.stems)
-        m.addAction("Use as voiceover music bed", self.use_as_bed)
-        m.addSeparator()
-        m.addAction("Open folder", self.open_folder)
-        more.setMenu(m)
-        acts.addWidget(more)
-        v.addLayout(acts)
+        sc = QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setFrameShape(QFrame.NoFrame)
+        sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        inner = QWidget()
+        self.rows = QVBoxLayout(inner)
+        self.rows.setContentsMargins(0, 0, 6, 0)
+        self.rows.setSpacing(8)
+        sc.setWidget(inner)
+        v.addWidget(sc, 1)
         self.fill_engines()
         return c
 
+    # ------------------------------------------------------------ sheet
+    def add_section(self, part: Part):
+        card = SectionCard(part)
+        card.removed.connect(self.remove_section)
+        self.cards.append(card)
+        self.sections_box.addWidget(card)
+
+    def remove_section(self, card):
+        if card in self.cards:
+            self.cards.remove(card)
+            card.deleteLater()
+
+    def load_sheet(self, sheet: Sheet):
+        for c in list(self.cards):
+            self.remove_section(c)
+        for p in sheet.parts:
+            self.add_section(p)
+        if sheet.language:
+            i = self.language.findData(sheet.language)
+            if i >= 0:
+                self.language.setCurrentIndex(i)
+
+    def sheet(self) -> Sheet:
+        return Sheet(self.title.text().strip(), self.language.currentData(), [c.part() for c in self.cards])
+
+    def on_instrumental(self, on: bool):
+        self.sections_w.setVisible(not on)
+        self.write_btn.setEnabled(not on)
+        self.cast.setEnabled(not on)
+
+    def paste_lyrics(self):
+        from .lyrics import parse
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Paste lyrics")
+        dlg.resize(560, 520)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(_label("Headers like [Verse 1 | Male], [Chorus | Duet], [Bridge - female], [Chorus | Choir] set "
+                             "the singer of each section.", "hint", wrap=True))
+        ed = QPlainTextEdit()
+        lay.addWidget(ed, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        if dlg.exec() == QDialog.Accepted and ed.toPlainText().strip():
+            parts = parse(ed.toPlainText())
+            self.load_sheet(Sheet(self.title.text(), self.language.currentData(), parts))
+
+    def write_lyrics(self):
+        plan = [(c.section.currentText(), c.singer.currentData()) for c in self.cards] or None
+        from .lyrics import default_plan
+
+        plan = plan or default_plan()
+        dlg = LyricsDialog(self, plan, self.style.toPlainText())
+        i = dlg.lang.findData(self.language.currentData())
+        if i >= 0:
+            dlg.lang.setCurrentIndex(i)
+        if dlg.exec() != QDialog.Accepted or not dlg.brief.toPlainText().strip():
+            return
+        brief, lang, engine = dlg.brief.toPlainText().strip(), dlg.lang.currentData(), dlg.engine.currentData()
+        if engine == "claude":
+            from .translate import get_claude_key
+
+            if not get_claude_key():
+                QMessageBox.information(self, "Claude", "Add your Claude API key in Settings first, or use the offline "
+                                        "writer.")
+                return
+        mood = self.style.toPlainText().strip()
+        from .lyrics import write
+
+        def done(parts, err):
+            self.finish()
+            if err:
+                QMessageBox.warning(self, "Lyrics", err)
+                return
+            self.load_sheet(Sheet(self.title.text(), lang, parts))
+            i = self.language.findData(lang)
+            if i >= 0:
+                self.language.setCurrentIndex(i)
+            if not self.title.text().strip():
+                self.title.setText(brief.split(".")[0][:40])
+            self.status.setText("Lyrics written — edit any line, change any singer, then Create song.")
+
+        self.run(lambda p: write(brief, lang, plan, mood, engine, p, seed=random.randint(0, 99999)), done,
+                 "Writing lyrics…")
+
+    # ------------------------------------------------------------ taste + inspiration
+    def show_taste(self):
+        from .taste import enhance
+
+        _s, add, bad = enhance(self.w.s.output_dir, self.style.toPlainText())
+        bits = []
+        if add:
+            bits.append("Learned from your likes: " + ", ".join("+" + a for a in add))
+        if bad:
+            bits.append("avoiding: " + ", ".join(bad[:3]))
+        self.taste.setText("  ·  ".join(bits))
+        self.use_taste.setVisible(bool(add or bad))
+
+    def inspire(self):
+        lib = ms.prompt_library()
+        if not lib:
+            return
+        k = random.choice(list(lib))
+        p = lib[k]
+        self.style.setPlainText(p.get("prompt", ""))
+        if not self.title.text().strip():
+            self.title.setText(p.get("title", ""))
+        if p.get("bpm"):
+            self.bpm.setValue(int(p["bpm"]))
+
+    # ------------------------------------------------------------ engine status
     def fill_engines(self):
         from . import runtimes
+        from .cloud import active_for
 
         while self.engine_row.count():
             it = self.engine_row.takeAt(0)
             if it.widget():
                 it.widget().hide()
                 it.widget().setParent(None)
-        rt = runtimes.is_ready("music")
-        mdl = (ms.checkpoints_root() / "checkpoints" / "acestep-v15-turbo").exists()
-        ok = rt and mdl
-        self.engine_row.addWidget(_label(("✓  Music engine ready — works offline." if ok else
-                                          "○  The music engine installs once (about 10 GB, ACE-Step 1.5). After that "
-                                          "everything runs on this computer."), "sub" if ok else "hint", wrap=True), 1)
-        if not ok:
-            b = QPushButton("Install music engine")
-            b.clicked.connect(self.install)
-            self.engine_row.addWidget(b)
-
-    def items(self) -> list[dict]:
-        return ms.load_history(self.w.s.output_dir)
-
-    def refresh_library(self, *_):
-        q = self.search.text().strip().lower() if hasattr(self, "search") else ""
-        rows = [it for it in self.items() if (not q or q in (it.get("title", "") + " " + (it.get("caption") or "")).lower())
-                and (not self.fav_only.isChecked() or it.get("favourite"))]
-        self.rows = rows
-        self.table.setRowCount(len(rows))
-        for i, it in enumerate(rows):
-            f = it.get("files", {})
-            vals = ["♥" if it.get("favourite") else "", it.get("title", ""), str(it.get("take", "")),
-                    f"{int(f.get('seconds', 0)) // 60}:{int(f.get('seconds', 0)) % 60:02d}",
-                    f"{it.get('bpm') or '—'} · {it.get('key') or '—'}", (it.get("caption") or "")[:120],
-                    (it.get("created") or "").replace("T", " ")[:16]]
-            for j, val in enumerate(vals):
-                self.table.setItem(i, j, QTableWidgetItem(val))
-        self.empty.setVisible(not rows)
-        self.table.setVisible(bool(rows))
-
-    def selected(self) -> dict | None:
-        r = self.table.selectionModel().selectedRows()
-        return self.rows[r[0].row()] if r else None
-
-    # ------------------------------------------------------------ actions
-    def request(self) -> ms.MusicRequest:
-        mode = {0: "simple", 1: "custom", 2: self.remix_kind.currentData()}[self.mode.checkedId()]
-        return ms.MusicRequest(
-            title=self.title.text().strip() or "Untitled", mode="score" if self.voice_job and mode == "custom" else mode,
-            description=self.description.toPlainText().strip(), style=self.style.toPlainText().strip(),
-            lyrics="" if self.instrumental.isChecked() else self.lyrics.toPlainText().strip(),
-            language="instrumental" if self.instrumental.isChecked() and mode != "simple" else self.lang.currentData(),
-            bpm=self.bpm.value() or None, key=self.key.currentData(), time_signature=self.ts.currentData(),
-            duration=float(self.duration.value()), takes=self.takes.value(), seed=self.seed.value(),
-            style_influence=self.influence.value(), weirdness=self.weird.value(), variety=self.variety.value(),
-            exclude=self.exclude.text().strip(), max_mode=self.max_mode.isChecked(), source_audio=self.src.text(),
-            cover_strength=self.cover_strength.value() / 100, repaint_start=self.rs.value(), repaint_end=self.re_.value(),
-            master_lufs=self.lufs.currentData(), voice_job=self.voice_job)
-
-    def run(self, fn, done, text):
-        if self.thread and self.thread.isRunning():
+        cloud = active_for("music")
+        ok = cloud or (runtimes.is_ready("music") and
+                       (ms.checkpoints_root() / "checkpoints" / "acestep-v15-turbo").exists())
+        if ok:
             return
-        self.go.setEnabled(False)
-        self.bar.setVisible(True)
-        self.status.setText(text)
-        from . import qt_workers
-
-        self.worker = _Job(fn)
-        self.worker.progress.connect(self.on_progress)
-        self.worker.done.connect(done)
-        self.thread = qt_workers.start(self.worker, self.worker.run, [self.worker.done])
-
-    def on_progress(self, f, m):
-        self.bar.setValue(int(1000 * max(0.0, min(1.0, f))))
-        self.status.setText(m)
-
-    def finish(self):
-        self.go.setEnabled(True)
-        self.bar.setVisible(False)
-
-    def create(self):
-        r = self.request()
-        if r.mode == "simple" and not r.description:
-            QMessageBox.information(self, "Describe the song", "Write a short description of the music first.")
-            return
-        if r.mode in ("custom", "score") and not r.style:
-            QMessageBox.information(self, "Style", "Describe the style, or pick one from the Prompt library.")
-            return
-        if r.mode in ("cover", "repaint", "extend") and not r.source_audio:
-            QMessageBox.information(self, "Source track", "Choose the track to remix.")
-            return
-        out = self.w.s.output_dir
-        self.run(lambda p: ms.generate(r, out, p), self.on_created, "Composing…")
-
-    def on_created(self, items, err):
-        self.finish()
-        if err:
-            self.status.setText("Music failed — " + err)
-            QMessageBox.warning(self, "Music Studio", err)
-            return
-        self.status.setText(f"{len(items)} take(s) ready.")
-        self.log.emit(f"Music Studio: {len(items)} take(s) of “{items[0]['title']}”" if items else "Music Studio")
-        self.voice_job = ""
-        self.refresh_library()
-        self.fill_engines()
-        if items:
-            self.table.selectRow(0)
-            self.play()
+        self.engine_row.addWidget(_label("The music engine installs once (about 10 GB). After that, songs are made "
+                                         "on this computer — or on your Cloud GPU.", "hint", wrap=True), 1)
+        b = QPushButton("Install music engine")
+        b.setObjectName("primary")
+        b.clicked.connect(self.install)
+        self.engine_row.addWidget(b)
 
     def install(self):
         def work(progress):
@@ -507,171 +543,240 @@ class MusicStudio(QWidget):
 
         self.run(work, lambda ok, err: (self.finish(), self.fill_engines(),
                                         QMessageBox.warning(self, "Install failed", err) if err
-                                        else self.status.setText("Music engine installed — works offline now.")),
+                                        else self.status.setText("Music engine installed.")),
                  "Installing the music engine (one time)…")
 
-    def pick_prompt(self):
-        lib = ms.prompt_library()
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Prompt library — 299 tested styles + Infinite Story presets")
-        dlg.resize(760, 560)
-        v = QVBoxLayout(dlg)
-        top = QHBoxLayout()
-        q = QLineEdit()
-        q.setPlaceholderText("Search: corporate, phonk, ballad, wedding…")
-        genre = QComboBox()
-        genre.addItem("All genres", "")
-        for gname in sorted({p.get("genre") or "" for p in lib.values()}):
-            if gname:
-                genre.addItem(gname.replace("-", " ").title(), gname)
-        top.addWidget(q, 1)
-        top.addWidget(genre)
-        v.addLayout(top)
-        lst = QListWidget()
-        v.addWidget(lst, 1)
-        preview = _label("", "hint", wrap=True)
-        v.addWidget(preview)
-
-        def fill():
-            lst.clear()
-            for pid, p in sorted(lib.items(), key=lambda kv: (kv[1].get("useCase") != "Infinite Story preset",
-                                                                kv[1].get("genre") or "", kv[1]["title"])):
-                if genre.currentData() and p.get("genre") != genre.currentData():
-                    continue
-                if q.text() and q.text().lower() not in (p["title"] + p["prompt"] + (p.get("useCase") or "")).lower():
-                    continue
-                it = QListWidgetItem(f"{p['title']}   ·   {(p.get('genre') or '').replace('-', ' ')}")
-                it.setData(Qt.UserRole, pid)
-                lst.addItem(it)
-
-        q.textChanged.connect(fill)
-        genre.currentIndexChanged.connect(fill)
-        lst.currentItemChanged.connect(lambda it, _p: preview.setText(lib[it.data(Qt.UserRole)]["prompt"] if it else ""))
-        fill()
-        btns = QHBoxLayout()
-        btns.addStretch()
-        cancel, ok = QPushButton("Cancel"), QPushButton("Use this style")
-        cancel.clicked.connect(dlg.reject)
-        ok.clicked.connect(dlg.accept)
-        lst.itemDoubleClicked.connect(lambda _: dlg.accept())
-        btns.addWidget(cancel)
-        btns.addWidget(ok)
-        v.addLayout(btns)
-        if dlg.exec() == QDialog.Accepted and lst.currentItem():
-            p = lib[lst.currentItem().data(Qt.UserRole)]
-            self.style.setPlainText(p["prompt"])
-            if p.get("bpm"):
-                self.bpm.setValue(int(p["bpm"]))
-            if not self.title.text():
-                self.title.setText(p["title"])
-
-    def score_voiceover(self):
-        start = str(Path(self.w.s.output_dir))
-        p, _ = QFileDialog.getOpenFileName(self, "Choose a Voice Studio voiceover", start, "Voiceover (*.voice.json)")
-        if not p:
+    # ------------------------------------------------------------ jobs
+    def run(self, fn, done, text):
+        if self.thread and self.thread.isRunning():
+            QMessageBox.information(self, "Busy", "Music is still working on the last job.")
             return
-        try:
-            r = ms.score_for_voiceover(p, self.style.toPlainText())
-        except Exception as exc:
-            QMessageBox.warning(self, "Score a voiceover", str(exc))
+        self.go.setEnabled(False)
+        self.bar.setVisible(True)
+        self.status.setText(text)
+        from . import qt_workers
+        from .gui_shell import track
+
+        self.worker = _Job(fn)
+        self.worker.progress.connect(self.on_progress)
+        self.worker.done.connect(done)
+        track(self.w, self.worker, text.rstrip("…. ") or "Music")
+        self.thread = qt_workers.start(self.worker, self.worker.run, [self.worker.done])
+
+    def on_progress(self, f, m):
+        self.bar.setValue(int(1000 * max(0.0, min(1.0, f))))
+        self.status.setText(m)
+        self.w.mast.ruler.set_progress(f)
+
+    def finish(self):
+        self.go.setEnabled(True)
+        self.bar.setVisible(False)
+        self.w.mast.ruler.set_progress(None)
+
+    def request(self) -> ms.MusicRequest:
+        from .taste import enhance
+
+        style = self.style.toPlainText().strip()
+        learned = []
+        if self.use_taste.isChecked() and self.use_taste.isVisible():
+            style, learned, bad = enhance(self.w.s.output_dir, style)
+            avoid = ", ".join(x for x in [self.avoid.text().strip()] + bad[:3] if x)
+        else:
+            avoid = self.avoid.text().strip()
+        sheet = self.sheet()
+        inst = self.instrumental.isChecked() or not any(p.lines for p in sheet.parts)
+        return ms.MusicRequest(title=self.title.text().strip() or "Untitled", mode="custom", style=style,
+                               language="instrumental" if inst else sheet.language, bpm=self.bpm.value() or None,
+                               key=self.key.currentData() or "", duration=float(self.duration.value()),
+                               takes=self.takes.value(), seed=self.seed.value(), exclude=avoid,
+                               max_mode=self.max_mode.isChecked(), sheet={} if inst else sheet.as_dict(),
+                               cast=self.cast.isChecked() and not inst, learned=learned)
+
+    def create(self):
+        r = self.request()
+        if not r.style:
+            QMessageBox.information(self, "Sound", "Describe the sound first (or press Inspire me).")
             return
-        self.voice_job = p
-        self.mode.button(1).setChecked(True)
-        self.on_mode(1)
-        self.title.setText(r.title)
-        self.style.setPlainText(r.style)
-        self.instrumental.setChecked(True)
-        self.bpm.setValue(int(r.bpm or 0))
-        self.duration.setValue(int(round(r.duration)))
-        self.lufs.setCurrentIndex(max(0, self.lufs.findData(-18.0)))
-        self.status.setText(f"Brief written for a {int(r.duration)} s voiceover — adjust anything, then Create music. "
-                            "The takes are mixed under the voice automatically.")
+        out = self.w.s.output_dir
+        self.run(lambda p: ms.generate(r, out, p), self.on_created, "Composing…")
 
-    def play(self):
-        it = self.selected()
-        if not it:
+    def on_created(self, items, err):
+        self.finish()
+        if err:
+            self.status.setText("Could not create the song — " + err)
+            QMessageBox.warning(self, "Music", err)
             return
-        from .gui_editor import AudioPlayer
-
-        f = it["files"].get("with_voice") or it["files"].get("wav")
-        if self.player is None:
-            self.player = AudioPlayer()
-        err = self.player.play(Path(f), 0.0, 600.0)
-        self.status.setText("Could not play: " + err if err else f"Playing “{it['title']}” take {it['take']}")
-
-    def player_play(self, f: str):
-        from .gui_editor import AudioPlayer
-
-        if self.player is None:
-            self.player = AudioPlayer()
-        self.player.play(Path(f), 0.0, 600.0)
-
-    def stop(self):
-        if self.player:
-            try:
-                self.player.stop()
-            except Exception:
-                pass
-
-    def favourite(self):
-        it = self.selected()
-        if not it:
-            return
-        items = self.items()
-        for x in items:
-            if x["id"] == it["id"]:
-                x["favourite"] = not x.get("favourite")
-        ms.save_history(self.w.s.output_dir, items)
+        self.status.setText(f"{len(items)} take(s) ready — ▶ to listen, 👍 / 👎 to teach VERBATIM your taste.")
+        self.log.emit(f"Music: {len(items)} take(s) of “{items[0]['title'] if items else ''}”")
         self.refresh_library()
+        if items:
+            self.play(items[0], None)
 
-    def reuse(self):
-        it = self.selected()
-        if not it:
+    # ------------------------------------------------------------ library
+    def refresh_library(self):
+        while self.rows.count():
+            it = self.rows.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        q = self.search.text().strip().lower() if hasattr(self, "search") else ""
+        items = [x for x in ms.load_history(self.w.s.output_dir)
+                 if (not q or q in (x.get("title", "") + " " + str(x.get("caption", ""))).lower())
+                 and (not self.fav_only.isChecked() or x.get("favourite"))]
+        queue = []
+        for x in items:
+            f = self._main(x)
+            if f:
+                queue.append((f, f"{x.get('title')} · take {x.get('take')}", "Song"))
+        for x in items[:200]:
+            self.rows.addWidget(SongRow(self, x, queue))
+        if not items:
+            self.rows.addWidget(_label("Your songs appear here — every take, ready to play and download.", "hint"))
+        self.rows.addStretch()
+
+    @staticmethod
+    def _main(it) -> str:
+        f = it.get("files", {}) or {}
+        for k in ("cast_mp3", "cast_wav", "mp3", "wav"):
+            if f.get(k) and Path(str(f[k])).exists():
+                return str(f[k])
+        return ""
+
+    def play(self, it, queue):
+        f = self._main(it)
+        if f:
+            Media.get().load(f, f"{it.get('title')} · take {it.get('take')}", "Song", queue=queue)
+
+    def _update(self, it, **kw):
+        items = ms.load_history(self.w.s.output_dir)
+        for x in items:
+            if x.get("id") == it.get("id"):
+                x.update(kw)
+        ms.save_history(self.w.s.output_dir, items)
+
+    def rate(self, it, ev: str):
+        from .taste import record
+
+        style = it.get("caption") or (it.get("request") or {}).get("style", "")
+        if ev == "favourite":
+            self._update(it, favourite=not it.get("favourite"))
+            if not it.get("favourite"):
+                record(self.w.s.output_dir, "favourite", style)
+        else:
+            self._update(it, rating=ev)
+            record(self.w.s.output_dir, ev, style)
+        self.refresh_library()
+        self.show_taste()
+
+    def download(self, it, path):
+        from .taste import record
+
+        if save_copy(self, path):
+            record(self.w.s.output_dir, "download", it.get("caption") or (it.get("request") or {}).get("style", ""))
+
+    def save_lyrics(self, it):
+        r = it.get("request") or {}
+        sheet = r.get("sheet") or {}
+        text = Sheet.from_dict(sheet).to_text() if sheet.get("parts") else r.get("lyrics", "")
+        if not text.strip():
+            QMessageBox.information(self, "Lyrics", "This take is instrumental.")
             return
-        r = it.get("request", {})
+        dest, _ = QFileDialog.getSaveFileName(self, "Save lyrics", str(Path.home() / "Downloads" /
+                                                                       f"{it.get('title', 'lyrics')}.txt"), "*.txt")
+        if dest:
+            Path(dest).write_text(text, encoding="utf-8")
+
+    def reuse(self, it):
+        r = it.get("request") or {}
         self.title.setText(r.get("title", ""))
         self.style.setPlainText(r.get("style", ""))
-        self.description.setPlainText(r.get("description", ""))
-        self.lyrics.setPlainText(r.get("lyrics", ""))
-        self.instrumental.setChecked(r.get("language") == "instrumental")
         self.bpm.setValue(int(r.get("bpm") or 0))
-        self.duration.setValue(int(r.get("duration") or 60))
+        self.duration.setValue(int(r.get("duration") or 150))
         self.seed.setValue(int(it.get("seed") or -1))
-        self.mode.button(1).setChecked(True)
-        self.on_mode(1)
+        sh = r.get("sheet") or {}
+        if sh.get("parts"):
+            self.load_sheet(Sheet.from_dict(sh))
+            self.instrumental.setChecked(False)
+        else:
+            self.instrumental.setChecked(r.get("language") == "instrumental")
 
-    def reroll(self):
-        it = self.selected()
-        if not it:
-            return
-        self.reuse()
+    def reroll(self, it):
+        from .taste import record
+
+        record(self.w.s.output_dir, "reroll", it.get("caption") or "")
+        self.reuse(it)
         self.seed.setValue(-1)
         self.create()
 
-    def remix(self):
-        it = self.selected()
-        if not it:
+    def remix(self, it):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Remix")
+        lay = QVBoxLayout(dlg)
+        mode = QComboBox()
+        mode.addItem("Cover — same song, new sound", "cover")
+        mode.addItem("Repaint a part", "repaint")
+        mode.addItem("Extend", "extend")
+        lay.addWidget(mode)
+        style = QPlainTextEdit((it.get("request") or {}).get("style", ""))
+        style.setFixedHeight(80)
+        lay.addWidget(_label("New sound", "sub"))
+        lay.addWidget(style)
+        row = QHBoxLayout()
+        row.addWidget(_label("Keep of the original", "sub"))
+        strength = QSlider(Qt.Horizontal)
+        strength.setRange(10, 95)
+        strength.setValue(60)
+        row.addWidget(strength)
+        lay.addLayout(row)
+        row2 = QHBoxLayout()
+        a, b = QDoubleSpinBox(), QDoubleSpinBox()
+        for x in (a, b):
+            x.setRange(0, 600)
+            x.setSuffix(" s")
+        b.setValue(30)
+        row2.addWidget(_label("Repaint from", "sub"))
+        row2.addWidget(a)
+        row2.addWidget(_label("to", "sub"))
+        row2.addWidget(b)
+        lay.addLayout(row2)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        if dlg.exec() != QDialog.Accepted:
             return
-        self.src.setText(it["files"]["wav"])
-        self.mode.button(2).setChecked(True)
-        self.on_mode(2)
-        self.title.setText(f"{it['title']} (remix)")
+        r = ms.MusicRequest(**{k: v for k, v in (it.get("request") or {}).items()
+                               if k in ms.MusicRequest.__dataclass_fields__})
+        r.mode, r.style = mode.currentData(), style.toPlainText().strip() or r.style
+        r.source_audio = (it.get("files") or {}).get("wav", "")
+        r.cover_strength, r.repaint_start, r.repaint_end = strength.value() / 100, a.value(), b.value()
+        r.title = f"{it.get('title')} ({mode.currentText().split(' —')[0].lower()})"
+        out = self.w.s.output_dir
+        self.run(lambda p: ms.generate(r, out, p), self.on_created, "Remixing…")
 
-    def stems(self):
-        it = self.selected()
-        if not it:
-            return
-        self.run(lambda p: ms.separate_stems(it["files"]["wav"], p),
-                 lambda res, err: (self.finish(), QMessageBox.warning(self, "Stems", err) if err else
-                                   (self.status.setText("Stems saved next to the take."),
-                                    QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(res["vocals"]).parent))))),
-                 "Separating vocals and instrumental…")
+    def recast(self, it):
+        from .casting import cast
 
-    def sing_as(self):
-        it = self.selected()
-        if not it:
-            QMessageBox.information(self, "Sing it in my voice", "Select a take with vocals first.")
+        sheet = (it.get("request") or {}).get("sheet") or {}
+        if not sheet.get("parts"):
+            QMessageBox.information(self, "Re-cast", "This take has no song sheet (it was instrumental or made in an "
+                                    "older version).")
             return
+        f = it.get("files") or {}
+        stem = Path(f["wav"]).with_name(Path(f["wav"]).stem + " (cast)")
+
+        def done(res, err):
+            self.finish()
+            if err:
+                QMessageBox.warning(self, "Re-cast", err)
+                return
+            f.update(cast_wav=res["wav"], cast_mp3=res["mp3"], cast_note=res["note"])
+            self._update(it, files=f)
+            self.status.setText(res["note"])
+            self.refresh_library()
+
+        self.run(lambda p: cast(f["wav"], Sheet.from_dict(sheet), stem, p), done, "Casting the singers…")
+
+    def sing_as(self, it):
         from . import voicelab
 
         voices = [cv for cv in voicelab.library() if cv.consent_id]
@@ -682,57 +787,60 @@ class MusicStudio(QWidget):
         dlg = QDialog(self)
         dlg.setWindowTitle("Sing it in my voice")
         lay = QVBoxLayout(dlg)
-        lay.addWidget(_label(f"“{it['title']}” — take {it['take']}", "h2"))
-        lay.addWidget(_label("The melody, timing and phrasing stay; the singer's tone becomes the chosen voice. "
-                             "Works best on clear lead vocals.", "hint", wrap=True))
         who = QComboBox()
         for cv in voices:
             who.addItem(f"{cv.name}  ·  {cv.owner or cv.character}", cv.id)
         lay.addWidget(who)
-        lay.addWidget(_label("Likeness", "sub"))
         like = QSlider(Qt.Horizontal)
         like.setRange(0, 100)
         like.setValue(70)
+        lay.addWidget(_label("Likeness", "sub"))
         lay.addWidget(like)
-        lay.addWidget(_label("Higher = closer to the chosen voice; lower keeps more of the original singer's colour.",
-                             "hint", wrap=True))
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("Sing it")
         bb.accepted.connect(dlg.accept)
         bb.rejected.connect(dlg.reject)
         lay.addWidget(bb)
         if dlg.exec() != QDialog.Accepted:
             return
         vid, k = who.currentData(), like.value() / 100
-        tau = 0.45 - 0.3 * k                  # 0.15 (closest) … 0.45 (loosest)
-        keep = 0.25 * (1 - k)
-        wav = it["files"]["wav"]
+        wav = (it.get("files") or {}).get("wav", "")
 
         def done(res, err):
             self.finish()
             if err:
                 QMessageBox.warning(self, "Sing it in my voice", err)
                 return
-            items = ms.load_history(self.w.s.output_dir)
-            for x in items:
-                if x["id"] == it["id"]:
-                    x.setdefault("versions", []).append(res)
-            ms.save_history(self.w.s.output_dir, items)
-            self.status.setText(f"Sung by {res['voice']} — saved next to the take.")
-            self.w.say(f"Music Studio: “{it['title']}” sung by {res['voice']} → {res['wav']}")
-            self.player_play(res["wav"])
+            vers = list(it.get("versions") or []) + [res]
+            self._update(it, versions=vers)
+            self.refresh_library()
+            Media.get().load(res["wav"], f"{it.get('title')} — sung by {res['voice']}", "Song")
 
-        self.run(lambda p: ms.sing_as(wav, vid, p, tau=tau, keep_original=keep), done, "Singing it in your voice…")
+        self.run(lambda p: ms.sing_as(wav, vid, p, tau=0.45 - 0.3 * k, keep_original=0.25 * (1 - k)), done,
+                 "Singing it in your voice…")
 
-    def use_as_bed(self):
-        it = self.selected()
-        if not it:
-            return
-        self.w.select_module(1)
-        self.w.voice.music_file.setText(it["files"]["wav"])
-        self.w.say(f"Music bed set to “{it['title']}” take {it['take']}")
+    def stems(self, it):
+        wav = (it.get("files") or {}).get("wav", "")
 
-    def open_folder(self):
-        it = self.selected()
-        p = Path(it["files"]["wav"]).parent if it else ms.library_dir(self.w.s.output_dir)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
+        def done(res, err):
+            self.finish()
+            if err:
+                QMessageBox.warning(self, "Stems", err)
+                return
+            f = dict(it.get("files") or {})
+            f.update(vocals=res.get("vocals", ""), instrumental=res.get("instrumental", ""))
+            self._update(it, files=f)
+            self.refresh_library()
+            self.status.setText("Stems ready — in the Download menu of the take.")
+
+        self.run(lambda p: ms.separate_stems(wav, p), done, "Separating vocals and instrumental…")
+
+    def use_as_bed(self, it):
+        from .taste import record
+
+        record(self.w.s.output_dir, "bed", it.get("caption") or "")
+        self.w.go("voiceover")
+        self.w.vo.music_mode.button(2).click()
+        self.w.vo.fill_songs()
+        i = self.w.vo.songs.findData((it.get("files") or {}).get("wav", ""))
+        if i >= 0:
+            self.w.vo.songs.setCurrentIndex(i)
